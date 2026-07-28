@@ -1,0 +1,14 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+# TEMPORARY PROBE - determines whether github.event_name inside a
+# reusable workflow reports the CALLER's event or 'workflow_call'.
+name: 'Probe caller'
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+permissions: {}
+jobs:
+  call:
+    name: 'Call reusable'
+    uses: ./.github/workflows/probe-reusable.yaml
