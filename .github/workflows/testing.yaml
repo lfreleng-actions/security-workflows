@@ -127,3 +127,22 @@ jobs:
     uses: ./.github/workflows/package-hardening-audit.yaml
     with:
       cooldown_strategy: 'dependabot'
+
+  # Exercise the Scorecard lane's analysis and plumbing WITHOUT touching
+  # the published record. publish_results is off because this runs on
+  # workflow_dispatch, which upstream treats as experimental, and a test
+  # run should not overwrite the repository's real published score.
+  #
+  # The lane's compliance with the Scorecard API's workflow restrictions
+  # is therefore NOT covered here: publishing is the only thing those
+  # rules gate. openssf-scorecard-self.yaml is the integration test for
+  # that, and it runs on every push to the default branch.
+  openssf-scorecard-dry-run:
+    name: 'OpenSSF Scorecard (dry run)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/openssf-scorecard.yaml
+    with:
+      publish_results: false
+      upload_sarif: false
+      summary_enabled: false

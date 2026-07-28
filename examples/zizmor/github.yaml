@@ -50,10 +50,10 @@ jobs:
     uses: lfreleng-actions/security-workflows/.github/workflows/zizmor.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
     with:
       upload_sarif: true
-    # Optional inputs, shown with their defaults:
-    #   persona: 'auditor'            # regular, pedantic, auditor
-    #   min_severity: 'informational' # raising this HIDES findings
-    #   min_confidence: ''            # empty audits every confidence
-    #   path_prefix: '.'
-    #   sarif_category: 'zizmor'
-    #   harden_runner_egress: 'block'
+      # Optional inputs, shown with their defaults:
+      #   persona: 'auditor'            # regular, pedantic, auditor
+      #   min_severity: 'informational' # raising this HIDES findings
+      #   min_confidence: ''            # empty audits every confidence
+      #   path_prefix: '.'
+      #   sarif_category: 'zizmor'
+      #   harden_runner_egress: 'block'

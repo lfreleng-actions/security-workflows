@@ -1,38 +1,415 @@
 ---
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: 2025 The Linux Foundation
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# This workflow uses actions that are not certified by GitHub. They are provided
-# by a third-party and are governed by separate terms of service, privacy
-# policy, and support documentation.
-
-name: "OpenSSF Scorecard"
+# OpenSSF Scorecard supply-chain health assessment.
+#
+#   validate -> scan -> summary
+#
+# This lane departs from the others in the repository, and every
+# departure traces back to one fact: when publish_results is enabled,
+# the Scorecard API validates the workflow that produced the results
+# and rejects anything outside a narrow shape. See
+# https://github.com/ossf/scorecard-action#workflow-restrictions
+#
+# What the API enforces, and what it means here:
+#
+#   * The scan job may only run steps from actions/checkout,
+#     actions/upload-artifact, github/codeql-action/upload-sarif,
+#     ossf/scorecard-action and step-security/harden-runner. The shared
+#     harden-runner-block-action loader is NOT on that list, so the scan
+#     job carries a curated inline allow-list instead. The summary job
+#     has no such restriction and uses the shared loader normally.
+#   * The scan job may not declare job-level env or defaults, which is
+#     why input validation lives in its own job rather than in a step.
+#   * No workflow-level write permissions, and only the scan job may
+#     hold id-token: write.
+#   * The scan job must run on an Ubuntu hosted runner, so runs_on is
+#     validated rather than accepted as-is.
+#
+# NO GERRIT SUPPORT, and this is not an omission. A Gerrit checkout
+# action cannot appear in the scan job under the rules above, and
+# Scorecard scores a repository as a whole rather than a change, so a
+# per-patchset run would not mean anything even if it were permitted.
+# There is likewise no repository or ref input: Scorecard reads
+# GITHUB_REPOSITORY and queries the GitHub API, so checking out a
+# different repository would change the working tree without changing
+# what is scored.
+#
+# Supported triggers are push and schedule on the default branch.
+# Upstream treats pull_request and workflow_dispatch as experimental,
+# and running against a fork is unsupported.
+#
+# Call this from a thin caller workflow; see examples/openssf-scorecard/
+name: '[R] OpenSSF Scorecard 🏅'
 
 # yamllint disable-line rule:truthy
 on:
-  workflow_dispatch:
-  # For Branch-Protection check. Only the default branch is supported. See
-  # https://github.com/ossf/scorecard/blob/main/docs/checks.md#branch-protection
-  branch_protection_rule:
-  # To guarantee Maintained check is occasionally updated. See
-  # https://github.com/ossf/scorecard/blob/main/docs/checks.md#maintained
-  schedule:
-    - cron: "50 4 * * 0"
-  push:
-    branches: ["main", "master"]
+  workflow_call:
+    inputs:
+      # --- Scorecard analysis ---
+      results_file:
+        description: 'File the analysis writes results to'
+        required: false
+        type: string
+        default: 'results.sarif'
+      results_format:
+        description: >-
+          Results format: 'sarif' or 'json'. The code scanning
+          dashboard only accepts sarif.
+        required: false
+        type: string
+        default: 'sarif'
+      publish_results:
+        description: >-
+          Publish results to the Scorecard API, which enables the
+          repository badge and replaces the upstream weekly scan.
+          Requires id-token: write on the calling job.
+        required: false
+        type: boolean
+        default: true
+      file_mode:
+        description: >-
+          How Scorecard fetches repository files: 'archive' or 'git'
+        required: false
+        type: string
+        default: 'archive'
 
-# Declare default permissions as none.
+      # --- Result publishing ---
+      upload_sarif:
+        description: 'Publish results to GitHub code scanning'
+        required: false
+        type: boolean
+        default: true
+      sarif_category:
+        description: 'Category used to group results in code scanning'
+        required: false
+        type: string
+        default: 'openssf-scorecard'
+      upload_artifact:
+        description: >-
+          Attach the results file to the run as an artifact. Useful for
+          debugging, and the only way to read results without write
+          access when code scanning upload is off.
+        required: false
+        type: boolean
+        default: true
+      artifact_name:
+        description: 'Name of the results artifact'
+        required: false
+        type: string
+        default: 'openssf-scorecard-results'
+      artifact_retention_days:
+        description: 'Retention period (days) for the results artifact'
+        required: false
+        type: number
+        default: 5
+
+      # --- Summary ---
+      summary_enabled:
+        description: >-
+          Run the summary job, which adds a link to the published
+          Scorecard report. The scan action produces no such link
+          itself, and the step cannot live in the scan job because the
+          summary action is not on the permitted step list.
+        required: false
+        type: boolean
+        default: true
+
+      # --- Runner selection and timeout ---
+      runs_on:
+        description: >-
+          Runner for the scan job. Must be an Ubuntu hosted runner;
+          the Scorecard API rejects results produced anywhere else.
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      timeout_minutes:
+        description: 'Timeout (minutes) for the scan job'
+        required: false
+        type: number
+        default: 15
+
+      # --- Runner hardening ---
+      harden_runner_egress:
+        description: "Harden-runner egress policy: 'block' or 'audit'"
+        required: false
+        type: string
+        default: 'block'
+      extra_allowed_endpoints:
+        description: >-
+          Endpoints appended to the scan job's curated allow-list, space
+          separated, each as host:port. The scan job cannot load the
+          shared org allow-list, so this is the supported way to widen
+          it without forking the lane.
+        required: false
+        type: string
+        default: ''
+      harden_runner_allowlist:
+        description: >-
+          Out-of-band harden-runner allow-list configuration. Applies to
+          the summary job only; the scan job uses its curated list.
+        required: false
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@4d8825761e149992652bccf8aa0de72d79903853'  # v0.10.0
+
 permissions: {}
 
 jobs:
-  openssf-scorecard:
-    name: "OpenSSF Scorecard"
-    # yamllint disable-line rule:line-length
-    uses: lfit/releng-reusable-workflows/.github/workflows/reuse-openssf-scorecard.yaml@5278f76fc1d27c49d0c9f795a6ddea65eeb5c11b  # v0.8.1
+  validate:
+    name: 'Validate Workflow Inputs'
+    # Input validation lives in its own job because the scan job may not
+    # run arbitrary steps. That constraint turns out to be a virtue: the
+    # checks run before the scan job starts, so a bad input costs
+    # seconds rather than a full analysis followed by an opaque API
+    # rejection.
+    #
+    # The job carries no harden-runner step by design: it performs pure
+    # input-string validation with no checkout, artifacts or network
+    # access, and loading the egress allow-list would itself add an
+    # outbound call.
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: 'Validate results inputs'
+        shell: bash
+        env:
+          RESULTS_FILE: ${{ inputs.results_file }}
+          RESULTS_FORMAT: ${{ inputs.results_format }}
+          FILE_MODE: ${{ inputs.file_mode }}
+          UPLOAD_SARIF: ${{ inputs.upload_sarif }}
+        run: |
+          # results_file names a file the scan job writes and two later
+          # steps read, so keep it a plain relative filename.
+          if [[ ! "${RESULTS_FILE}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::results_file must be a plain filename" \
+              "(received: '${RESULTS_FILE}')"
+            exit 1
+          fi
+          case "${RESULTS_FORMAT}" in
+            sarif | json) ;;
+            *)
+              echo "::error::results_format must be 'sarif' or 'json'" \
+                "(received: '${RESULTS_FORMAT}')"
+              exit 1
+              ;;
+          esac
+          case "${FILE_MODE}" in
+            archive | git) ;;
+            *)
+              echo "::error::file_mode must be 'archive' or 'git'" \
+                "(received: '${FILE_MODE}')"
+              exit 1
+              ;;
+          esac
+          # Code scanning ingests SARIF only. Uploading a JSON results
+          # file fails inside the upload action with a parse error that
+          # says nothing about the format input that caused it.
+          if [ "${UPLOAD_SARIF}" = 'true' ] \
+            && [ "${RESULTS_FORMAT}" != 'sarif' ]; then
+            echo "::error::upload_sarif requires results_format 'sarif'"
+            exit 1
+          fi
+
+      - name: 'Validate runs_on input'
+        shell: bash
+        env:
+          RUNS_ON: ${{ inputs.runs_on }}
+        run: |
+          # The Scorecard API rejects results from anything other than
+          # an Ubuntu hosted runner when publishing. A bare 'ubuntu-'
+          # prefix check is not enough: a self-hosted label may be
+          # named anything, including 'ubuntu-buildbox', and would pass
+          # here only to be rejected by the API after a full analysis.
+          # Match the documented hosted label forms instead, allowing
+          # the -arm and larger-runner -N-cores variants.
+          if ! [[ "${RUNS_ON}" =~ \
+            ^ubuntu-(latest|[0-9]{2}\.[0-9]{2})(-arm)?(-[0-9]{1,3}-cores)?$ ]]
+          then
+            echo "::error::runs_on must be a GitHub-hosted Ubuntu" \
+              "runner label, for example ubuntu-latest, ubuntu-24.04," \
+              "ubuntu-24.04-arm or ubuntu-latest-8-cores; the" \
+              "Scorecard API rejects results produced elsewhere" \
+              "(received: '${RUNS_ON}')"
+            exit 1
+          fi
+
+      - name: 'Validate extra_allowed_endpoints input'
+        shell: bash
+        env:
+          EXTRA_ENDPOINTS: ${{ inputs.extra_allowed_endpoints }}
+        run: |
+          # Each entry is interpolated into the harden-runner
+          # allowed-endpoints list. Restrict to host:port tokens so a
+          # stray value cannot reshape the list into something that
+          # silently permits more than intended.
+          if [ -z "${EXTRA_ENDPOINTS}" ]; then
+            exit 0
+          fi
+          for endpoint in ${EXTRA_ENDPOINTS}; do
+            if [[ ! "${endpoint}" =~ ^[A-Za-z0-9.*-]+:[0-9]{1,5}$ ]]; then
+              echo "::error::Invalid extra_allowed_endpoints entry:" \
+                "'${endpoint}' (expected host:port)"
+              exit 1
+            fi
+          done
+
+      - name: 'Validate timeout_minutes input'
+        shell: bash
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          # GitHub permits 1-360 minutes; an out-of-range value fails
+          # the run with an opaque scheduling error.
+          if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] \
+            || [ "${TIMEOUT_MINUTES}" -lt 1 ] \
+            || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
+            echo "::error::timeout_minutes must be an integer 1-360" \
+              "(received: '${TIMEOUT_MINUTES}')"
+            exit 1
+          fi
+
+      - name: 'Validate artifact_retention_days input'
+        if: inputs.upload_artifact
+        shell: bash
+        env:
+          RETENTION_DAYS: ${{ inputs.artifact_retention_days }}
+        run: |
+          # GitHub permits 1-90 days for public repositories. Only
+          # meaningful when the artifact is actually produced.
+          if ! [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] \
+            || [ "${RETENTION_DAYS}" -lt 1 ] \
+            || [ "${RETENTION_DAYS}" -gt 90 ]; then
+            echo "::error::artifact_retention_days must be an integer" \
+              "1-90 (received: '${RETENTION_DAYS}')"
+            exit 1
+          fi
+
+  scan:
+    name: 'Scan'
+    needs: validate
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
-      contents: read  # Read repository contents (checkout, etc.)
-      # yamllint disable-line rule:line-length
-      security-events: write  # Upload results to the code-scanning dashboard
-      id-token: write  # Publish results and obtain Scorecard badge via OIDC
-      # Uncomment the permission below if installing in a private repository.
-      # actions: read
+      contents: read  # checkout
+      security-events: write  # upload results to code scanning
+      id-token: write  # publish results and obtain the badge, via OIDC
+      # Without this the upload fails on private repositories, and
+      # continue-on-error on that step would hide the failure.
+      actions: read  # upload-sarif reads run info on private repos
+      # Private repositories additionally need issues: read,
+      # pull-requests: read and checks: read, granted by the caller.
+    # NOTE: every step below must come from the Scorecard API's permitted
+    # list. Adding anything else makes the publish call fail with
+    # HTTP 400 naming the offending step.
+    steps:
+      # Curated allow-list covering only what Scorecard itself reaches.
+      # The shared loader cannot run here, so this list is maintained by
+      # hand; extra_allowed_endpoints widens it without forking.
+      #
+      # Deliberately absent: ghcr.io. ossf/scorecard-action is a Docker
+      # action, so the runner pulls its image, and that pull was
+      # confirmed to succeed under this exact list rather than assumed
+      # to work. Do not add it speculatively.
+      - name: 'Harden runner (block)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            *.githubusercontent.com:443
+            api.deps.dev:443
+            api.osv.dev:443
+            api.scorecard.dev:443
+            www.bestpractices.dev:443
+            oss-fuzz-build-logs.storage.googleapis.com:443
+            *.sigstore.dev:443
+            tuf-repo.github.com:443
+            prod.app-api.stepsecurity.io:443
+            ${{ inputs.extra_allowed_endpoints }}
+      - name: 'Harden runner (audit)'
+        if: inputs.harden_runner_egress == 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Run analysis'
+        # yamllint disable-line rule:line-length
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc  # v2.4.4
+        with:
+          results_file: ${{ inputs.results_file }}
+          results_format: ${{ inputs.results_format }}
+          publish_results: ${{ inputs.publish_results }}
+          file_mode: ${{ inputs.file_mode }}
+
+      - name: 'Upload results artifact'
+        if: inputs.upload_artifact
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.results_file }}
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: 'error'
+
+      # Advisory: a code scanning upload failure (feature disabled, quota
+      # reached) must not fail a run whose analysis succeeded and whose
+      # results were published to the Scorecard API.
+      - name: 'Upload results to code scanning'
+        if: inputs.upload_sarif
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9  # v4.37.0
+        with:
+          sarif_file: ${{ inputs.results_file }}
+          category: ${{ inputs.sarif_category }}
+
+  summary:
+    name: 'Link'
+    needs: scan
+    if: inputs.summary_enabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # Read-only, and deliberately no id-token: the Scorecard API
+      # requires that only the job running scorecard-action holds it.
+      contents: read
+    steps:
+      - name: 'Load egress allow-list (block mode)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        if: inputs.harden_runner_egress == 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Provide link to Scorecard report'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/openssf-scorecard-summary-action@307b3f6d85f7cde3e85731b76bd32612707c894d  # v0.1.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
