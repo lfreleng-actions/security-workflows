@@ -1,0 +1,306 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Package manager supply-chain hardening audit.
+#
+#   validate -> audit
+#
+# Grades a repository's package manager configuration: lockfiles
+# present, dependencies pinned, minimum release age enforced, Dependabot
+# cooldowns configured, Harden-Runner in use. The auditor is Python
+# stdlib only, so there is no install step and the egress allow-list
+# stays minimal.
+#
+# The audit reports rather than gates by default. That is deliberate:
+# it lets a project adopt the check as a required status while the
+# rules are still being tuned, then flip audit_permit_fail to false to
+# start enforcing. Set it to false once the findings are at zero.
+#
+# The auditor needs bash and python3, so runs_on must name a Linux or
+# macOS runner. Windows is not supported.
+#
+# Call this from a thin caller workflow; see
+# examples/package-hardening-audit/
+name: '[R] Package Hardening Audit 🛡️'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      # --- Checkout target (defaults to the calling repository) ---
+      repository:
+        description: 'Repository to check out (owner/name)'
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: >-
+          Branch/tag/SHA to check out. Empty uses the triggering
+          event's ref for same-repository checkouts, or the default
+          branch when checking out a different repository.
+        required: false
+        type: string
+        default: ''
+
+      # --- Project layout ---
+      path_prefix:
+        description: 'Path to the repository root to audit'
+        required: false
+        type: string
+        default: '.'
+
+      # --- Audit configuration ---
+      audit_permit_fail:
+        description: >-
+          Report findings without failing the job. Defaults to true so
+          the lane can be adopted as a required check before a project
+          reaches zero findings.
+        required: false
+        type: boolean
+        default: true
+      cooldown_strategy:
+        description: >-
+          How to grade the release-age cooldown control. 'auto'
+          accepts either a resolver-level or a Dependabot cooldown and
+          warns when both are set, because a resolver-level cooldown
+          blocks Dependabot's automated security updates.
+          'dependabot' requires a Dependabot cooldown and flags
+          redundant resolver-level ones; prefer it for estates
+          standardised on Dependabot. 'resolver' requires a
+          resolver-level cooldown.
+        required: false
+        type: string
+        default: 'auto'
+
+      # --- Runner selection and timeout ---
+      runs_on:
+        description: 'Runner label for the audit job (Linux or macOS)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      timeout_minutes:
+        description: 'Timeout (minutes) for the audit job'
+        required: false
+        type: number
+        default: 5
+
+      # --- Runner hardening ---
+      harden_runner_egress:
+        description: "Harden-runner egress policy: 'block' or 'audit'"
+        required: false
+        type: string
+        default: 'block'
+      harden_runner_allowlist:
+        description: 'Out-of-band harden-runner allow-list configuration'
+        required: false
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@4d8825761e149992652bccf8aa0de72d79903853'  # v0.10.0
+
+      # --- Gerrit-aware checkout (empty unless dispatched via Gerrit) ---
+      gerrit_refspec:
+        description: 'Gerrit refspec of the change under test'
+        required: false
+        type: string
+        default: ''
+      gerrit_project:
+        description: 'Gerrit project name'
+        required: false
+        type: string
+        default: ''
+      gerrit_branch:
+        description: 'Gerrit target branch'
+        required: false
+        type: string
+        default: ''
+      gerrit_url:
+        description: >-
+          Gerrit server URL. Empty falls back to the GERRIT_URL
+          repository variable at runtime.
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  validate:
+    name: 'Validate Workflow Inputs'
+    # Fails fast with a clear message when inputs are inconsistent. The
+    # audit job depends on this, so invalid input stops the pipeline
+    # early and cleanly. This job always runs (only the validation steps
+    # are conditional), so gating dependents on it does not trip
+    # GitHub's "skipped need skips dependents" behaviour.
+    #
+    # The job carries no harden-runner step by design: it performs pure
+    # input-string validation with no checkout, artifacts or network
+    # access, and loading the egress allow-list would itself add an
+    # outbound call.
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: 'Validate path_prefix input'
+        shell: bash
+        env:
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+        run: |
+          # Require a relative, non-traversing path: the auditor reads
+          # this directory, so an empty value, absolute paths or ..
+          # segments could reach outside the checkout. A single
+          # trailing slash is tolerated ('./' == '.').
+          PATH_PREFIX="${PATH_PREFIX%/}"
+          if [ "${PATH_PREFIX}" = '.' ]; then
+            exit 0
+          fi
+          if [[ ! "${PATH_PREFIX}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] \
+            || [[ "${PATH_PREFIX}" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::Invalid path_prefix input: ${PATH_PREFIX}"
+            exit 1
+          fi
+
+      - name: 'Validate cooldown_strategy input'
+        shell: bash
+        env:
+          COOLDOWN_STRATEGY: ${{ inputs.cooldown_strategy }}
+        run: |
+          # An unrecognised strategy would change how the cooldown
+          # control is graded, and with audit_permit_fail defaulting to
+          # true the resulting misgrade would pass unnoticed.
+          case "${COOLDOWN_STRATEGY}" in
+            auto | dependabot | resolver) ;;
+            *)
+              echo "::error::cooldown_strategy must be 'auto'," \
+                "'dependabot' or 'resolver'" \
+                "(received: '${COOLDOWN_STRATEGY}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate runs_on input'
+        shell: bash
+        env:
+          RUNS_ON: ${{ inputs.runs_on }}
+        run: |
+          # The auditor needs bash and python3. A Windows runner fails
+          # partway through the composite action with a shell error
+          # that does not name the cause.
+          case "${RUNS_ON}" in
+            '')
+              echo "::error::runs_on must not be empty"
+              exit 1
+              ;;
+            *windows* | *Windows* | *WINDOWS*)
+              echo "::error::runs_on must name a Linux or macOS" \
+                "runner; the auditor requires bash and python3" \
+                "(received: '${RUNS_ON}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate timeout_minutes input'
+        shell: bash
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          # GitHub permits 1-360 minutes; an out-of-range value fails
+          # the run with an opaque scheduling error.
+          if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] \
+            || [ "${TIMEOUT_MINUTES}" -lt 1 ] \
+            || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
+            echo "::error::timeout_minutes must be an integer 1-360" \
+              "(received: '${TIMEOUT_MINUTES}')"
+            exit 1
+          fi
+
+      - name: 'Require Gerrit project, branch and URL'
+        if: inputs.gerrit_refspec != ''
+        shell: bash
+        env:
+          GERRIT_PROJECT: ${{ inputs.gerrit_project }}
+          GERRIT_BRANCH: ${{ inputs.gerrit_branch }}
+          # yamllint disable-line rule:line-length
+          GERRIT_URL: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+        run: |
+          # gerrit_refspec is set, so the Gerrit checkout path runs and
+          # also requires gerrit_project, gerrit_branch and a resolvable
+          # Gerrit URL (the gerrit_url input or the GERRIT_URL variable).
+          missing=''
+          if [ -z "${GERRIT_PROJECT}" ]; then
+            missing="${missing} gerrit_project"
+          fi
+          if [ -z "${GERRIT_BRANCH}" ]; then
+            missing="${missing} gerrit_branch"
+          fi
+          if [ -z "${GERRIT_URL}" ]; then
+            missing="${missing} gerrit_url/GERRIT_URL"
+          fi
+          if [ -n "${missing}" ]; then
+            echo "::error::gerrit_refspec is set but missing:${missing}"
+            exit 1
+          fi
+          echo 'Gerrit inputs validated ✅'
+
+  audit:
+    name: 'Audit package manager hardening'
+    needs: validate
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      # The bare minimum: check out the repository under audit. The
+      # auditor reports to the job summary and publishes nothing.
+      contents: read
+    steps:
+      - name: 'Load egress allow-list (block mode)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        if: inputs.harden_runner_egress == 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout Gerrit change'
+        if: inputs.gerrit_refspec != ''
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/checkout-gerrit-change-action@f87b90a3370e62dad310797fedc7fd3700c75832  # v1.0.2
+        with:
+          gerrit-refspec: ${{ inputs.gerrit_refspec }}
+          gerrit-project: ${{ inputs.gerrit_project }}
+          # yamllint disable-line rule:line-length
+          gerrit-url: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+          delay: '0s'
+          ref: refs/heads/${{ inputs.gerrit_branch }}
+
+      - name: 'Checkout repository under audit'
+        if: inputs.gerrit_refspec == ''
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The only third-party action across the security lanes. Accepted
+      # because the author is a team member; see docs/BRIEF.md D10. The
+      # pin is a commit SHA, not the annotated tag object.
+      - name: 'Run package manager hardening audit'
+        # yamllint disable-line rule:line-length
+        uses: jordanconway/package-manager-hardening@e8e3fe3a0b3826d4b42bf11536ad0e730cf98309  # v0.4.3
+        with:
+          path: ${{ inputs.path_prefix }}
+          warn-only: ${{ inputs.audit_permit_fail }}
+          cooldown-strategy: ${{ inputs.cooldown_strategy }}

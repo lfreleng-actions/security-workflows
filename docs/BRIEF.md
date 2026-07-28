@@ -96,6 +96,13 @@ build with a scan, and each was a source of intra-repository
 cross-references. Their behaviour folds into a `build_type` input on the
 relevant lane. Net: fifteen files become six lanes.
 
+One filename collision remains to resolve. This repository already
+carries `.github/workflows/openssf-scorecard.yaml`, its own Scorecard
+self-scan, and the planned lane wants the same name. The self-scan is a
+`push`/`schedule`/`branch_protection_rule` workflow and the lane is
+`workflow_call`, so they cannot merge into one file. Whichever is
+renamed, the other keeps the obvious name; decide when that lane lands.
+
 ## Design decisions
 
 ### D1 — Collapse the `composed-*` matrix
@@ -241,6 +248,36 @@ succeeds and reports a project with near-zero coverage and no
 bytecode-derived findings. That is worse than a failure, because the
 dashboard looks healthy. The Sonar default therefore matches the sibling
 repositories; the CLM lane is the exception.
+
+### D13 — SARIF publishing keeps its own job
+
+`zizmor-scan-action` can upload SARIF to code scanning itself, via an
+`upload-sarif` input. The lane does not expose it, and instead keeps the
+source workflow's two-job split: `audit` holds `contents: read`, writes
+the SARIF as an artifact, and a separate `upload` job holds
+`security-events: write`.
+
+Using the action's own upload would collapse that. Every run would need
+the write scope, including pull requests raised from forks, for a
+publish step that only fires on default-branch pushes. The artifact hop
+is the cost of keeping the audit job unprivileged.
+
+The publish step is `continue-on-error`. A repository without code
+scanning enabled, or one that has hit a quota, should not fail a run
+whose audit succeeded and whose findings are already in the job summary.
+
+### D14 — The zizmor lane reports; it does not gate
+
+In SARIF mode zizmor exits 0 whatever it finds — the finding exit codes
+only apply to its plain output mode. `zizmor-scan-action` exposes a
+`sarif-file` output but no findings count, so the lane has nothing to
+branch on and deliberately carries no `scan_permit_fail` input.
+
+Making the lane gateable belongs in the action, not here: a
+`findings-count` output (or a `permit_fail` input) added to
+`zizmor-scan-action` would let every consumer gate, whereas parsing the
+SARIF inside the lane would put language-specific logic in a workflow
+that should be action calls. Tracked as a follow-up.
 
 ### Legacy defects not carried forward
 

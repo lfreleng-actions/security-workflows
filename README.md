@@ -33,9 +33,9 @@ and picks up the security lanes from
 | ---- | ------- | ------ |
 | `sonatype-lifecycle.yaml` | Nexus IQ CLM dependency scan, with optional pre-scan build | **Available** |
 | `sonarqube-cloud.yaml` | SonarQube Cloud static analysis, with optional pre-scan build | **Available** |
-| `zizmor.yaml` | GitHub Actions workflow audit, SARIF publishing | Planned |
+| `zizmor.yaml` | GitHub Actions workflow audit, SARIF publishing | **Available** |
 | `openssf-scorecard.yaml` | OpenSSF Scorecard supply-chain health | Planned |
-| `package-hardening-audit.yaml` | Package manager hardening audit | Planned |
+| `package-hardening-audit.yaml` | Package manager hardening audit | **Available** |
 | `codeql.yaml` | CodeQL static analysis | Planned |
 
 <!-- markdownlint-enable MD013 -->
