@@ -1,0 +1,579 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# CodeQL static analysis.
+#
+#   validate -> analyze (matrix over languages)
+#
+# The source workflow this replaces was Python-only despite carrying
+# machinery for other languages, and that machinery never ran. Its
+# matrix contained a single hardcoded entry, so the Swift branches in
+# runs-on and timeout-minutes were dead: no matrix entry could ever
+# select them. This lane takes languages as an input and builds the
+# matrix from it, which is also what makes build_mode and packs
+# meaningful, since CodeQL only accepts those when analysing a single
+# language per job.
+#
+# One language per job also isolates failures. fail-fast is off, so a
+# language whose extraction breaks does not discard the results of the
+# others.
+#
+# Languages requiring different build modes, or different runners, need
+# separate calls: build_mode and runs_on apply to every matrix entry.
+# Swift is the common case, needing macOS. Compose that at the caller
+# rather than expecting one invocation to cover everything.
+#
+# Gerrit note: this lane can scan a Gerrit change, but code scanning
+# attributes SARIF to a GitHub ref, and a Gerrit patchset is not one.
+# Per-change runs would therefore file alerts against the target branch.
+# Set upload: 'never' for those and rely on the Verified vote; see
+# examples/codeql/gerrit.yaml
+#
+# Call this from a thin caller workflow; see examples/codeql/
+name: '[R] CodeQL Scan 🔎'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      # --- Checkout target (defaults to the calling repository) ---
+      repository:
+        description: 'Repository to check out (owner/name)'
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: >-
+          Branch/tag/SHA to check out. Empty uses the triggering
+          event's ref for same-repository checkouts, or the default
+          branch when checking out a different repository.
+        required: false
+        type: string
+        default: ''
+
+      # --- Project layout ---
+      path_prefix:
+        description: >-
+          Root source directory, relative to the workspace. Passed to
+          CodeQL as source-root.
+        required: false
+        type: string
+        default: '.'
+
+      # --- Analysis ---
+      languages:
+        description: >-
+          Comma-separated CodeQL languages. One matrix job runs per
+          language. Valid values: actions, c-cpp, csharp, go,
+          java-kotlin, javascript-typescript, python, ruby, rust,
+          swift.
+        required: false
+        type: string
+        default: 'python'
+      build_mode:
+        description: >-
+          How CodeQL builds the database: 'none', 'autobuild' or
+          'manual'. Applies to every language in the matrix, so a
+          project mixing interpreted and compiled languages needs one
+          call per build mode. 'manual' is not usable here, because it
+          requires build steps between init and analyze which a
+          reusable workflow cannot accept.
+        required: false
+        type: string
+        default: 'none'
+      config_file:
+        description: >-
+          Path to a CodeQL configuration file, for path filters and
+          query selection
+        required: false
+        type: string
+        default: ''
+      queries:
+        description: >-
+          Comma-separated additional query suites, for example
+          'security-extended'. Prefix with '+' to add to the
+          configuration file's set rather than replace it.
+        required: false
+        type: string
+        default: ''
+      packs:
+        description: >-
+          Comma-separated CodeQL packs as scope/name[@version]. Prefix
+          with '+' to add to the configuration file's set.
+        required: false
+        type: string
+        default: ''
+      tools:
+        description: >-
+          CodeQL bundle to use. Empty uses the version the action
+          ships with; 'linked' pins to that explicitly.
+        required: false
+        type: string
+        default: ''
+      ram:
+        description: >-
+          Memory in MB available to CodeQL. Empty lets CodeQL size
+          itself from the runner.
+        required: false
+        type: string
+        default: ''
+      threads:
+        description: >-
+          Threads available to CodeQL. Empty lets CodeQL size itself
+          from the runner.
+        required: false
+        type: string
+        default: ''
+      debug:
+        description: 'Enable CodeQL debug logging and debug artifacts'
+        required: false
+        type: boolean
+        default: false
+
+      # --- Result publishing ---
+      upload:
+        description: >-
+          Publish SARIF to code scanning: 'always', 'failure-only' or
+          'never'. Use 'never' for Gerrit per-change runs, which would
+          otherwise file alerts against the target branch.
+        required: false
+        type: string
+        default: 'always'
+      category:
+        description: >-
+          Category used by code scanning to match analyses. Empty lets
+          the action derive one from the matrix, which keeps each
+          language separate.
+        required: false
+        type: string
+        default: ''
+      upload_database:
+        description: >-
+          Upload the CodeQL database to GitHub, which powers code
+          search and security research on public repositories
+        required: false
+        type: boolean
+        default: true
+      wait_for_processing:
+        description: >-
+          Wait for code scanning to finish processing the upload, so
+          processing errors fail the job rather than passing silently
+        required: false
+        type: boolean
+        default: true
+      upload_artifact:
+        description: >-
+          Attach the SARIF results to the run as an artifact. The
+          primary channel is code scanning; this matters where that is
+          unavailable, such as a private repository without Advanced
+          Security.
+        required: false
+        type: boolean
+        default: true
+      artifact_name:
+        description: >-
+          Base name of the results artifact. The language is appended,
+          because artifact names must be unique across matrix jobs.
+        required: false
+        type: string
+        default: 'codeql-results'
+      artifact_retention_days:
+        description: 'Retention period (days) for the results artifact'
+        required: false
+        type: number
+        default: 5
+
+      # --- Runner selection and timeout ---
+      runs_on:
+        description: >-
+          Runner for the analysis jobs. Swift needs macOS; every other
+          language runs on Linux.
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      timeout_minutes:
+        description: >-
+          Timeout (minutes) for each analysis job. The source workflow
+          used GitHub's 360-minute maximum, so a hung extraction burned
+          six hours of runner time before failing.
+        required: false
+        type: number
+        default: 60
+
+      # --- Runner hardening ---
+      harden_runner_egress:
+        description: "Harden-runner egress policy: 'block' or 'audit'"
+        required: false
+        type: string
+        default: 'block'
+      harden_runner_allowlist:
+        description: 'Out-of-band harden-runner allow-list configuration'
+        required: false
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@4d8825761e149992652bccf8aa0de72d79903853'  # v0.10.0
+
+      # --- Gerrit-aware checkout (empty unless dispatched via Gerrit) ---
+      gerrit_refspec:
+        description: 'Gerrit refspec of the change under test'
+        required: false
+        type: string
+        default: ''
+      gerrit_project:
+        description: 'Gerrit project name'
+        required: false
+        type: string
+        default: ''
+      gerrit_branch:
+        description: 'Gerrit target branch'
+        required: false
+        type: string
+        default: ''
+      gerrit_url:
+        description: >-
+          Gerrit server URL. Empty falls back to the GERRIT_URL
+          repository variable at runtime.
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  validate:
+    name: 'Validate Workflow Inputs'
+    # Fails fast with a clear message when inputs are inconsistent, and
+    # builds the language matrix the analysis job fans out over. The
+    # matrix has to come from a job output because GitHub evaluates
+    # strategy.matrix before any step runs, so it cannot be derived
+    # inside the analysis job itself.
+    #
+    # The job carries no harden-runner step by design: it performs pure
+    # input-string validation with no checkout, artifacts or network
+    # access, and loading the egress allow-list would itself add an
+    # outbound call.
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    outputs:
+      languages_json: ${{ steps.languages.outputs.languages_json }}
+    steps:
+      - name: 'Validate path_prefix input'
+        shell: bash
+        env:
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+        run: |
+          # Require a relative, non-traversing path: CodeQL takes this
+          # as source-root, so an empty value, absolute paths or ..
+          # segments could reach outside the checkout. A single
+          # trailing slash is tolerated ('./' == '.').
+          PATH_PREFIX="${PATH_PREFIX%/}"
+          if [ "${PATH_PREFIX}" = '.' ]; then
+            exit 0
+          fi
+          if [[ ! "${PATH_PREFIX}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] \
+            || [[ "${PATH_PREFIX}" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::Invalid path_prefix input: ${PATH_PREFIX}"
+            exit 1
+          fi
+
+      - name: 'Validate languages and build matrix'
+        id: languages
+        shell: bash
+        env:
+          LANGUAGES: ${{ inputs.languages }}
+        run: |
+          # Build the matrix from the languages input. Every value is
+          # checked against CodeQL's supported set: an unrecognised
+          # language fails inside init only after the job has hardened,
+          # checked out and downloaded the bundle.
+          #
+          # Disable globbing before splitting: with IFS set to a comma,
+          # an unquoted expansion would still undergo pathname
+          # expansion and could turn a value into filenames.
+          set -f
+          IFS=','
+          langs=''
+          seen=''
+          count=0
+          for lang in ${LANGUAGES}; do
+            lang="${lang//[[:space:]]/}"
+            if [ -z "${lang}" ]; then
+              continue
+            fi
+            case "${lang}" in
+              actions | c-cpp | csharp | go | java-kotlin | \
+              javascript-typescript | python | ruby | rust | swift) ;;
+              *)
+                echo "::error::Unsupported CodeQL language:" \
+                  "'${lang}'. Valid values: actions, c-cpp, csharp," \
+                  "go, java-kotlin, javascript-typescript, python," \
+                  "ruby, rust, swift"
+                exit 1
+                ;;
+            esac
+            # A repeat would fan out into two identical jobs racing to
+            # upload the same artifact name, and artifact names must be
+            # unique within a run, so one of them would fail. Reject it
+            # rather than silently collapsing the duplicate: a repeated
+            # language is a caller mistake worth surfacing.
+            case ",${seen}," in
+              *",${lang},"*)
+                echo "::error::Duplicate language in languages input:" \
+                  "'${lang}'. List each language once."
+                exit 1
+                ;;
+            esac
+            seen="${seen}${seen:+,}${lang}"
+            if [ "${count}" -eq 0 ]; then
+              langs="\"${lang}\""
+            else
+              langs="${langs},\"${lang}\""
+            fi
+            count=$((count + 1))
+          done
+          unset IFS
+          set +f
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::languages must name at least one language"
+            exit 1
+          fi
+          # Values come from the fixed allow-list above, so emitting
+          # them into JSON needs no further escaping.
+          echo "languages_json=[${langs}]" >> "$GITHUB_OUTPUT"
+          echo "Analysing ${count} language(s): [${langs}] ✅"
+
+      - name: 'Validate build_mode input'
+        shell: bash
+        env:
+          BUILD_MODE: ${{ inputs.build_mode }}
+        run: |
+          # 'manual' expects build steps between init and analyze. A
+          # reusable workflow has no way to accept caller-supplied
+          # steps, so selecting it here would build an empty database
+          # and report a clean result for code that was never compiled.
+          case "${BUILD_MODE}" in
+            none | autobuild) ;;
+            manual)
+              echo "::error::build_mode 'manual' is not supported by" \
+                "this lane: it requires build steps between init and" \
+                "analyze, which a reusable workflow cannot accept." \
+                "Use 'autobuild', or run CodeQL directly in a" \
+                "workflow that owns the build steps."
+              exit 1
+              ;;
+            *)
+              echo "::error::build_mode must be 'none' or 'autobuild'" \
+                "(received: '${BUILD_MODE}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate upload input'
+        shell: bash
+        env:
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          # An unrecognised value is treated as a legacy boolean by the
+          # action, which silently changes publishing behaviour.
+          case "${UPLOAD}" in
+            always | failure-only | never) ;;
+            *)
+              echo "::error::upload must be 'always', 'failure-only'" \
+                "or 'never' (received: '${UPLOAD}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate resource inputs'
+        shell: bash
+        env:
+          RAM: ${{ inputs.ram }}
+          THREADS: ${{ inputs.threads }}
+        run: |
+          # Both reach CodeQL as command-line values; keep them
+          # numeric. threads accepts negatives, meaning "leave this
+          # many cores free", so it allows a leading minus.
+          if [ -n "${RAM}" ] && ! [[ "${RAM}" =~ ^[0-9]+$ ]]; then
+            echo "::error::ram must be a positive integer in MB" \
+              "(received: '${RAM}')"
+            exit 1
+          fi
+          if [ -n "${THREADS}" ] \
+            && ! [[ "${THREADS}" =~ ^-?[0-9]+$ ]]; then
+            echo "::error::threads must be an integer" \
+              "(received: '${THREADS}')"
+            exit 1
+          fi
+
+      - name: 'Validate timeout_minutes input'
+        shell: bash
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          # GitHub permits 1-360 minutes; an out-of-range value fails
+          # the run with an opaque scheduling error.
+          if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] \
+            || [ "${TIMEOUT_MINUTES}" -lt 1 ] \
+            || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
+            echo "::error::timeout_minutes must be an integer 1-360" \
+              "(received: '${TIMEOUT_MINUTES}')"
+            exit 1
+          fi
+
+      - name: 'Validate artifact_retention_days input'
+        if: inputs.upload_artifact
+        shell: bash
+        env:
+          RETENTION_DAYS: ${{ inputs.artifact_retention_days }}
+        run: |
+          # GitHub permits 1-90 days for public repositories. Only
+          # meaningful when the artifact is actually produced.
+          if ! [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] \
+            || [ "${RETENTION_DAYS}" -lt 1 ] \
+            || [ "${RETENTION_DAYS}" -gt 90 ]; then
+            echo "::error::artifact_retention_days must be an integer" \
+              "1-90 (received: '${RETENTION_DAYS}')"
+            exit 1
+          fi
+
+      - name: 'Require Gerrit project, branch and URL'
+        if: inputs.gerrit_refspec != ''
+        shell: bash
+        env:
+          GERRIT_PROJECT: ${{ inputs.gerrit_project }}
+          GERRIT_BRANCH: ${{ inputs.gerrit_branch }}
+          # yamllint disable-line rule:line-length
+          GERRIT_URL: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+        run: |
+          # gerrit_refspec is set, so the Gerrit checkout path runs and
+          # also requires gerrit_project, gerrit_branch and a resolvable
+          # Gerrit URL (the gerrit_url input or the GERRIT_URL variable).
+          missing=''
+          if [ -z "${GERRIT_PROJECT}" ]; then
+            missing="${missing} gerrit_project"
+          fi
+          if [ -z "${GERRIT_BRANCH}" ]; then
+            missing="${missing} gerrit_branch"
+          fi
+          if [ -z "${GERRIT_URL}" ]; then
+            missing="${missing} gerrit_url/GERRIT_URL"
+          fi
+          if [ -n "${missing}" ]; then
+            echo "::error::gerrit_refspec is set but missing:${missing}"
+            exit 1
+          fi
+          echo 'Gerrit inputs validated ✅'
+
+  analyze:
+    name: 'Analyze (${{ matrix.language }})'
+    needs: validate
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read  # checkout
+      security-events: write  # upload CodeQL results to code scanning
+      packages: read  # fetch internal or private CodeQL packs
+      actions: read  # the upload reads run info on private repos
+    strategy:
+      # One language failing extraction must not discard the results of
+      # the others.
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(needs.validate.outputs.languages_json) }}
+    steps:
+      - name: 'Load egress allow-list (block mode)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        if: inputs.harden_runner_egress == 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout Gerrit change'
+        if: inputs.gerrit_refspec != ''
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/checkout-gerrit-change-action@f87b90a3370e62dad310797fedc7fd3700c75832  # v1.0.2
+        with:
+          gerrit-refspec: ${{ inputs.gerrit_refspec }}
+          gerrit-project: ${{ inputs.gerrit_project }}
+          # yamllint disable-line rule:line-length
+          gerrit-url: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+          delay: '0s'
+          ref: refs/heads/${{ inputs.gerrit_branch }}
+
+      - name: 'Checkout repository'
+        if: inputs.gerrit_refspec == ''
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The source workflow cached ~/.cache/pip here. That cache was
+      # dead weight: CodeQL stopped installing Python dependencies in
+      # action version 3.25.0, and setup-python-dependencies has been
+      # ignored ever since, so nothing in this job populates or reads a
+      # pip cache. Restoring a cache into a job holding
+      # security-events: write would also be a cache-poisoning surface
+      # for no benefit. CodeQL manages its own caching through the
+      # trap-caching and dependency-caching inputs.
+
+      # init and analyze MUST stay on the same pin. Mixing CodeQL Action
+      # versions within one workflow is unsupported: init warns, and the
+      # later steps fail outright on a configuration written by a
+      # different version.
+      - name: 'Initialize CodeQL'
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/init@99df26d4f13ea111d4ec1a7dddef6063f76b97e9  # v4.37.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ inputs.build_mode }}
+          config-file: ${{ inputs.config_file }}
+          queries: ${{ inputs.queries }}
+          packs: ${{ inputs.packs }}
+          tools: ${{ inputs.tools }}
+          source-root: ${{ inputs.path_prefix }}
+          ram: ${{ inputs.ram }}
+          threads: ${{ inputs.threads }}
+          debug: ${{ inputs.debug }}
+
+      - name: 'Perform CodeQL analysis'
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/analyze@99df26d4f13ea111d4ec1a7dddef6063f76b97e9  # v4.37.0
+        with:
+          output: 'codeql-results'
+          upload: ${{ inputs.upload }}
+          category: ${{ inputs.category }}
+          upload-database: ${{ inputs.upload_database }}
+          wait-for-processing: ${{ inputs.wait_for_processing }}
+          ram: ${{ inputs.ram }}
+          threads: ${{ inputs.threads }}
+
+      # The language suffix is required, not cosmetic: artifact names
+      # must be unique within a run, and every matrix job would
+      # otherwise upload under the same name.
+      - name: 'Upload CodeQL results'
+        if: inputs.upload_artifact
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}-${{ matrix.language }}
+          path: 'codeql-results/'
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: 'error'

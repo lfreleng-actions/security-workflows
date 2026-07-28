@@ -320,6 +320,50 @@ There is no `repository` or `ref` input. Scorecard reads
 different repository would change the working tree without changing what
 is scored — an input that appeared to work and silently did nothing.
 
+### D16 — CodeQL takes languages as an input, not as a hardcoded matrix
+
+The source workflow was Python-only despite carrying machinery for
+other languages, and that machinery never ran. Its matrix held one
+hardcoded entry, so the Swift branches in `runs-on` and
+`timeout-minutes` were unreachable: no matrix entry could select them.
+
+`languages` becomes an input and the matrix is built from it in the
+`validate` job. The matrix has to come from a job output because GitHub
+evaluates `strategy.matrix` before any step runs, so it cannot be
+derived inside the analysis job.
+
+One language per job is also what makes `build_mode` and `packs`
+meaningful: CodeQL accepts both only when analysing a single language
+per job. `fail-fast` is off, so a language whose extraction breaks does
+not discard the others' results.
+
+`build_mode` and `runs_on` still apply to every matrix entry, so a
+project mixing interpreted and compiled languages needs one call per
+build mode. That composes at the caller, consistent with the rest of
+the repository, and the example shows it.
+
+`build_mode: manual` is rejected outright. It requires build steps
+between `init` and `analyze`, and a reusable workflow cannot accept
+caller-supplied steps; permitting it would build an empty database and
+report a clean result for code that was never compiled.
+
+### D17 — CodeQL under Gerrit analyses but does not publish
+
+Code scanning attributes SARIF to a GitHub ref, and a Gerrit patchset is
+not one. Publishing a per-change scan would file alerts against the
+target branch for code that has not merged, and those alerts would
+outlive an abandoned change.
+
+The lane therefore keeps `upload` as an input defaulting to `always`,
+and the Gerrit example sets `upload: 'never'`, reporting the outcome as
+a Verified vote instead. Projects wanting the dashboard populated as
+well deploy a second, GitHub-native caller on default-branch pushes,
+which scans merged code on a real ref.
+
+This is what D8 means by "partial" Gerrit support for this lane: the
+scan runs, but the results reach Gerrit as a vote rather than as inline
+findings.
+
 ### Legacy defects not carried forward
 
 The audit of the source SonarCloud workflows found the following. None
@@ -354,6 +398,20 @@ migrated project's results against its history.
   a command.
 - No `timeout-minutes` anywhere, Python 3.8 hardcoded, and a mix of
   `ubuntu-latest` and `ubuntu-24.04`.
+
+The CodeQL source workflow contributed two of its own:
+
+- **A dead pip cache.** It restored `~/.cache/pip` into the analysis
+  job. CodeQL stopped installing Python dependencies in action version
+  3.25.0, and `setup-python-dependencies` has been ignored ever since,
+  so nothing in that job populated or read the cache. Restoring a cache
+  into a job holding `security-events: write` is also a cache-poisoning
+  surface, so it bought a risk for no benefit. Dropped; CodeQL manages
+  its own caching through `trap-caching` and `dependency-caching`.
+- **A 360-minute timeout**, GitHub's maximum, on a `build-mode: none`
+  Python scan that completes in minutes. A hung extraction burned six
+  hours of runner time before failing. The lane defaults to 60 and
+  exposes the value.
 
 ## Shared input vocabulary
 

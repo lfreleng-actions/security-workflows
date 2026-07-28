@@ -1,0 +1,199 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: Gerrit-wrapped caller for the CodeQL lane
+# =============================================================================
+# Use this form when Gerrit is the source of truth (SCM) for your project.
+# gerrit_to_platform dispatches this workflow (via the GitHub API) when a
+# patchset is created in Gerrit; it then votes Verified +/-1 on the change.
+#
+# DEPLOYMENT NOTES:
+#   * Copy into .github/workflows/ with a filename containing BOTH 'gerrit'
+#     AND the lane name so gerrit_to_platform can discover it, e.g.
+#     gerrit-codeql.yaml.
+#   * The workflow file must exist on EVERY active branch: dispatches
+#     target refs/heads/{GERRIT_BRANCH}.
+#   * The nine GERRIT_* inputs are populated automatically by the dispatcher.
+#   * GERRIT_DISABLED lets you run manually from the GitHub UI without Gerrit
+#     (the clear/vote jobs are skipped and a normal checkout is used).
+#   * Set the repository variables GERRIT_SERVER, GERRIT_SSH_USER,
+#     GERRIT_KNOWN_HOSTS, GERRIT_URL, and the secret GERRIT_SSH_PRIVKEY.
+#     The lane itself needs no secrets.
+#   * Gerrit voting connects over SSH (tcp/29418). Ensure the harden-runner
+#     allow-list in use carries that entry, or the vote job fails in block
+#     mode.
+#
+# WHY upload IS SET TO 'never' HERE:
+#   Code scanning attributes SARIF to a GitHub ref, and a Gerrit patchset
+#   is not one. Publishing from a per-change run would therefore file
+#   alerts against the TARGET BRANCH for code that has not merged, and
+#   those alerts would persist after the change was abandoned.
+#
+#   So this caller analyses the change and reports the outcome to Gerrit
+#   as a Verified vote, without publishing. The findings are in the job
+#   summary and in the uploaded artifact of the linked run.
+#
+#   To populate the code scanning dashboard as well, deploy a SECOND,
+#   GitHub-native caller (see examples/codeql/github.yaml) triggered on
+#   push to the default branch. That run scans merged code on a real ref,
+#   which is what code scanning expects.
+# =============================================================================
+name: 'Gerrit CodeQL'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+    inputs:
+      GERRIT_BRANCH:
+        description: 'Branch that change is against'
+        required: false
+        type: string
+        default: ''
+      GERRIT_CHANGE_ID:
+        description: 'The ID for the change'
+        required: false
+        type: string
+        default: ''
+      GERRIT_CHANGE_NUMBER:
+        description: 'The Gerrit number'
+        required: false
+        type: string
+        default: ''
+      GERRIT_CHANGE_URL:
+        description: 'URL to the change'
+        required: false
+        type: string
+        default: ''
+      GERRIT_EVENT_TYPE:
+        description: 'Type of Gerrit event'
+        required: false
+        type: string
+        default: ''
+      GERRIT_PATCHSET_NUMBER:
+        description: 'The patch number for the change'
+        required: false
+        type: string
+        default: ''
+      GERRIT_PATCHSET_REVISION:
+        description: 'The revision sha'
+        required: false
+        type: string
+        default: ''
+      GERRIT_PROJECT:
+        description: 'Project in Gerrit'
+        required: false
+        type: string
+        default: ''
+      GERRIT_REFSPEC:
+        description: 'Gerrit refspec of change'
+        required: false
+        type: string
+        default: ''
+      GERRIT_DISABLED:
+        description: 'Run without Gerrit components'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.event.inputs.GERRIT_CHANGE_ID || github.run_id }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # Clear any previous Verified vote so the change starts from a clean state.
+  clear-vote:
+    if: inputs.GERRIT_DISABLED != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+      - name: 'Clear votes'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/gerrit-review-action@a1c036a59b94c8ab89de26d378f6a28cc7378b13  # v1.1.2
+        with:
+          host: ${{ vars.GERRIT_SERVER }}
+          username: ${{ vars.GERRIT_SSH_USER }}
+          key: ${{ secrets.GERRIT_SSH_PRIVKEY }}
+          known_hosts: ${{ vars.GERRIT_KNOWN_HOSTS }}
+          gerrit-change-number: ${{ inputs.GERRIT_CHANGE_NUMBER }}
+          gerrit-patchset-number: ${{ inputs.GERRIT_PATCHSET_NUMBER }}
+          vote-type: clear
+      - name: 'Allow replication'
+        run: sleep 10s
+
+  # Call the CodeQL lane. When dispatched by Gerrit, the gerrit_* inputs
+  # drive checkout-gerrit-change-action inside the lane, so the analysis
+  # sees the code under review rather than the branch tip. For a manual
+  # GERRIT_DISABLED run the GERRIT_* inputs are empty, so the lane performs
+  # a normal checkout.
+  codeql:
+    needs: clear-vote
+    if: >-
+      always()
+      && (needs.clear-vote.result == 'success'
+          || needs.clear-vote.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read  # fetch internal or private CodeQL packs
+      # security-events: write is deliberately absent. upload is 'never'
+      # below, so nothing is published and the scope is not needed.
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/codeql.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    with:
+      # When GERRIT_DISABLED is true the gerrit_* values are blanked so the
+      # lane falls back to a standard checkout.
+      # yamllint disable-line rule:line-length
+      gerrit_refspec: ${{ !inputs.GERRIT_DISABLED && inputs.GERRIT_REFSPEC || '' }}
+      # yamllint disable-line rule:line-length
+      gerrit_project: ${{ !inputs.GERRIT_DISABLED && inputs.GERRIT_PROJECT || '' }}
+      # yamllint disable-line rule:line-length
+      gerrit_branch: ${{ !inputs.GERRIT_DISABLED && inputs.GERRIT_BRANCH || '' }}
+      # gerrit_url falls back to the GERRIT_URL repository variable.
+      languages: 'python'
+      # See the note at the top of this file: publishing a per-change scan
+      # would file alerts against the target branch for unmerged code.
+      upload: 'never'
+      upload_database: false
+
+  # Report the overall workflow conclusion back to Gerrit as a Verified vote.
+  vote:
+    if: ${{ always() && inputs.GERRIT_DISABLED != true }}
+    needs: [clear-vote, codeql]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # workflow-conclusion queries the Actions API to list run jobs
+      actions: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+      - name: 'Get conclusion'
+        # yamllint disable-line rule:line-length
+        uses: im-open/workflow-conclusion@7b146947e59eaf7fc3328822357861ab1758c088  # v2.2.5
+      - name: 'Set vote'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/gerrit-review-action@a1c036a59b94c8ab89de26d378f6a28cc7378b13  # v1.1.2
+        with:
+          host: ${{ vars.GERRIT_SERVER }}
+          username: ${{ vars.GERRIT_SSH_USER }}
+          key: ${{ secrets.GERRIT_SSH_PRIVKEY }}
+          known_hosts: ${{ vars.GERRIT_KNOWN_HOSTS }}
+          gerrit-change-number: ${{ inputs.GERRIT_CHANGE_NUMBER }}
+          gerrit-patchset-number: ${{ inputs.GERRIT_PATCHSET_NUMBER }}
+          vote-type: ${{ env.WORKFLOW_CONCLUSION }}

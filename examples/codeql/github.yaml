@@ -1,0 +1,79 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the CodeQL lane
+# =============================================================================
+# Use this form for projects where GitHub is the source of truth.
+#
+# DEPLOYMENT NOTES:
+#   * Needs no secrets.
+#   * Free for public repositories. Private repositories need GitHub
+#     Advanced Security.
+#   * Set languages to what the project actually contains. One matrix job
+#     runs per language, and fail-fast is off, so one language failing
+#     extraction does not discard the others' results.
+#   * A scheduled run matters more here than for most lanes: CodeQL ships
+#     new queries regularly, so a repository clean today can acquire
+#     alerts without a single line changing.
+#
+# ONE CALL PER BUILD MODE:
+#   build_mode and runs_on apply to every language in the matrix, so a
+#   project mixing interpreted and compiled languages needs more than one
+#   job. Swift is the usual reason: it needs a macOS runner. Add a second
+#   job calling the same lane:
+#
+#     codeql-swift:
+#       name: 'CodeQL (Swift)'
+#       permissions:
+#         contents: read
+#         security-events: write
+#         packages: read
+#         actions: read
+#       uses: lfreleng-actions/security-workflows/
+#             .github/workflows/codeql.yaml@<RELEASE-SHA>
+#       with:
+#         languages: 'swift'
+#         build_mode: 'autobuild'
+#         runs_on: 'macos-latest'
+# =============================================================================
+name: 'Security Scans (CodeQL)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main', 'master']
+  push:
+    branches: ['main', 'master']
+  schedule:
+    # Odd minute so GitHub's queue randomises the exact start time
+    - cron: '27 3 * * 6'
+
+permissions: {}
+
+jobs:
+  codeql:
+    name: 'CodeQL'
+    permissions:
+      contents: read  # checkout
+      security-events: write  # upload results to code scanning
+      packages: read  # fetch internal or private CodeQL packs
+      actions: read  # the upload reads run info on private repositories
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/codeql.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    with:
+      languages: 'python,javascript-typescript'
+      # Optional inputs, shown with their defaults:
+      #   build_mode: 'none'        # or 'autobuild' for compiled languages
+      #   path_prefix: '.'          # passed to CodeQL as source-root
+      #   queries: ''               # e.g. 'security-extended'
+      #   config_file: ''           # path filters and query selection
+      #   upload: 'always'          # 'failure-only' or 'never'
+      #   upload_artifact: true
+      #   timeout_minutes: 60
+      #   runs_on: 'ubuntu-latest'
+      #   harden_runner_egress: 'block'
