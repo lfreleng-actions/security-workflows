@@ -1,0 +1,59 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the zizmor lane
+# =============================================================================
+# Use this form for projects where GitHub is the source of truth.
+#
+# DEPLOYMENT NOTES:
+#   * Needs no secrets. The audit reads workflow files from the checkout.
+#   * On pull requests the lane is advisory: findings appear in the job
+#     summary and nothing is published.
+#   * upload_sarif publishes to code scanning, but only on default-branch
+#     pushes. GitHub Advanced Security must be enabled for the repository
+#     (it is free for public repositories). The publish step is
+#     deliberately non-blocking, so leaving it enabled on a repository
+#     without code scanning costs a warning, not a failed run.
+#   * A scheduled run keeps results current: zizmor gains audits over
+#     time, so a workflow clean today can acquire findings without
+#     changing.
+# =============================================================================
+name: 'Security Scans (Workflows)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main', 'master']
+  push:
+    branches: ['main', 'master']
+  schedule:
+    # Odd minute so GitHub's queue randomises the exact start time
+    - cron: '19 2 * * 6'
+
+permissions: {}
+
+jobs:
+  zizmor:
+    name: 'Zizmor'
+    permissions:
+      contents: read
+      # The lane's publish job needs these; a called workflow cannot be
+      # granted more than the caller job holds.
+      security-events: write
+      actions: read
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/zizmor.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    with:
+      upload_sarif: true
+    # Optional inputs, shown with their defaults:
+    #   persona: 'auditor'            # regular, pedantic, auditor
+    #   min_severity: 'informational' # raising this HIDES findings
+    #   min_confidence: ''            # empty audits every confidence
+    #   path_prefix: '.'
+    #   sarif_category: 'zizmor'
+    #   harden_runner_egress: 'block'

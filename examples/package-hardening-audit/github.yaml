@@ -1,0 +1,48 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the package hardening audit lane
+# =============================================================================
+# Use this form for projects where GitHub is the source of truth.
+#
+# DEPLOYMENT NOTES:
+#   * Needs no secrets. The audit reads package manager configuration
+#     from the checkout and reports to the job summary.
+#   * audit_permit_fail defaults to true, so the lane can be adopted as a
+#     required status check straight away without blocking merges. Once
+#     the findings reach zero, set it to false to keep them there.
+#   * cooldown_strategy: 'dependabot' suits estates standardised on
+#     Dependabot cooldowns, because a resolver-level cooldown (uv
+#     exclude-newer, npm age gates) blocks Dependabot's automated
+#     security updates.
+# =============================================================================
+name: 'Security Scans (Package Hardening)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main', 'master']
+  push:
+    branches: ['main', 'master']
+
+permissions: {}
+
+jobs:
+  package-hardening-audit:
+    name: 'Package Hardening Audit'
+    permissions:
+      contents: read
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/package-hardening-audit.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    with:
+      cooldown_strategy: 'dependabot'
+    # Optional inputs, shown with their defaults:
+    #   audit_permit_fail: true   # false turns the lane into a gate
+    #   path_prefix: '.'
+    #   runs_on: 'ubuntu-latest'  # Linux or macOS; Windows unsupported
+    #   harden_runner_egress: 'block'

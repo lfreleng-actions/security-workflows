@@ -1,0 +1,519 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# GitHub Actions workflow security audit using zizmor.
+#
+#   validate -> audit -> upload (optional)
+#
+# The audit itself is one action call. What the lane adds is privilege
+# separation and configurability.
+#
+# Privilege separation: the audit job holds contents: read and nothing
+# more. Publishing SARIF needs security-events: write, so it happens in
+# a separate job gated to default-branch pushes, with the SARIF passed
+# between them as an artifact. The scan action can upload SARIF itself,
+# but doing so would force every run to carry the write scope, including
+# pull requests raised from forks. The lane therefore does not expose
+# the action's upload-sarif input.
+#
+# Configurability: persona and min_severity are lane inputs rather than
+# action defaults. An organisation whose reporting pipeline runs at one
+# severity floor and whose PR gate runs at another will silently
+# disagree with itself, and the disagreement is invisible because the
+# lower-severity findings never reach the SARIF. Both are stated here.
+#
+# Scope note: zizmor's SARIF mode exits 0 whatever it finds, so this
+# lane reports rather than gates. Turning it into a gate needs a
+# findings count from the scan action; see docs/BRIEF.md.
+#
+# Call this from a thin caller workflow; see examples/zizmor/
+name: '[R] Zizmor Scan 🌈'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      # --- Checkout target (defaults to the calling repository) ---
+      repository:
+        description: 'Repository to check out (owner/name)'
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: >-
+          Branch/tag/SHA to check out. Empty uses the triggering
+          event's ref for same-repository checkouts, or the default
+          branch when checking out a different repository.
+        required: false
+        type: string
+        default: ''
+
+      # --- Project layout ---
+      path_prefix:
+        description: >-
+          Path within the workspace to audit. Workflows are discovered
+          under this directory.
+        required: false
+        type: string
+        default: '.'
+
+      # --- Audit configuration ---
+      persona:
+        description: >-
+          zizmor persona: 'regular', 'pedantic' or 'auditor'. Defaults
+          to auditor to match the organisation reporting pipeline.
+        required: false
+        type: string
+        default: 'auditor'
+      min_severity:
+        description: >-
+          Lowest severity reported: 'unknown', 'informational', 'low',
+          'medium' or 'high'. Defaults to informational, again matching
+          the reporting pipeline. Raising this floor discards findings
+          before they reach the SARIF, so a repository can look clean
+          while carrying genuine issues.
+        required: false
+        type: string
+        default: 'informational'
+      min_confidence:
+        description: >-
+          Lowest confidence reported: 'low', 'medium' or 'high'. Empty
+          audits every confidence level.
+        required: false
+        type: string
+        default: ''
+      zizmor_version:
+        description: >-
+          Override the version the scan action bundles, for example
+          'v1.25.2'. Empty uses the bundled pin.
+        required: false
+        type: string
+        default: ''
+      extra_args:
+        description: >-
+          Additional raw arguments appended to the zizmor call.
+          Restricted to plain flags and values: A-Z a-z 0-9 space and
+          . _ / = , : @ + - only. Note these are appended AFTER the
+          lane's own flags, so a duplicate --persona or --min-severity
+          here would take precedence over the dedicated inputs; set
+          those inputs instead.
+        required: false
+        type: string
+        default: ''
+
+      # --- Step-summary attribution ---
+      summary_repository:
+        description: >-
+          owner/repo used to build step-summary links. Set together
+          with summary_sha when auditing a repository other than the
+          one running the workflow; the scan action ignores a partial
+          pair with a warning.
+        required: false
+        type: string
+        default: ''
+      summary_sha:
+        description: >-
+          Commit SHA (7-40 hex digits) used to build step-summary
+          links. Set together with summary_repository.
+        required: false
+        type: string
+        default: ''
+
+      # --- SARIF publishing ---
+      upload_sarif:
+        description: >-
+          Publish SARIF to code scanning. Applies to default-branch
+          pushes only, so pull request runs stay advisory.
+        required: false
+        type: boolean
+        default: false
+      sarif_category:
+        description: 'Category used to group results in code scanning'
+        required: false
+        type: string
+        default: 'zizmor'
+      artifact_name:
+        description: 'Name of the SARIF artifact passed between jobs'
+        required: false
+        type: string
+        default: 'zizmor-sarif'
+      artifact_retention_days:
+        description: 'Retention period (days) for the SARIF artifact'
+        required: false
+        type: number
+        default: 5
+
+      # --- Job timeout ---
+      timeout_minutes:
+        description: 'Timeout (minutes) for the audit job'
+        required: false
+        type: number
+        default: 10
+
+      # --- Runner hardening ---
+      harden_runner_egress:
+        description: "Harden-runner egress policy: 'block' or 'audit'"
+        required: false
+        type: string
+        default: 'block'
+      harden_runner_allowlist:
+        description: 'Out-of-band harden-runner allow-list configuration'
+        required: false
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@4d8825761e149992652bccf8aa0de72d79903853'  # v0.10.0
+
+      # --- Gerrit-aware checkout (empty unless dispatched via Gerrit) ---
+      gerrit_refspec:
+        description: 'Gerrit refspec of the change under test'
+        required: false
+        type: string
+        default: ''
+      gerrit_project:
+        description: 'Gerrit project name'
+        required: false
+        type: string
+        default: ''
+      gerrit_branch:
+        description: 'Gerrit target branch'
+        required: false
+        type: string
+        default: ''
+      gerrit_url:
+        description: >-
+          Gerrit server URL. Empty falls back to the GERRIT_URL
+          repository variable at runtime.
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  validate:
+    name: 'Validate Workflow Inputs'
+    # Fails fast with a clear message when inputs are inconsistent. The
+    # audit job depends on this, so invalid input stops the pipeline
+    # early and cleanly. This job always runs (only the validation steps
+    # are conditional), so gating dependents on it does not trip
+    # GitHub's "skipped need skips dependents" behaviour.
+    #
+    # The job carries no harden-runner step by design: it performs pure
+    # input-string validation with no checkout, artifacts or network
+    # access, and loading the egress allow-list would itself add an
+    # outbound call.
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: 'Validate path_prefix input'
+        shell: bash
+        env:
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+        run: |
+          # Require a relative, non-traversing path: the scan action
+          # audits this directory, so an empty value, absolute paths or
+          # .. segments could reach outside the checkout. A single
+          # trailing slash is tolerated ('./' == '.').
+          PATH_PREFIX="${PATH_PREFIX%/}"
+          if [ "${PATH_PREFIX}" = '.' ]; then
+            exit 0
+          fi
+          if [[ ! "${PATH_PREFIX}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] \
+            || [[ "${PATH_PREFIX}" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::Invalid path_prefix input: ${PATH_PREFIX}"
+            exit 1
+          fi
+
+      - name: 'Validate audit configuration inputs'
+        shell: bash
+        env:
+          PERSONA: ${{ inputs.persona }}
+          MIN_SEVERITY: ${{ inputs.min_severity }}
+          MIN_CONFIDENCE: ${{ inputs.min_confidence }}
+        run: |
+          # zizmor rejects an unrecognised value, but only after the
+          # job has hardened, checked out and downloaded the binary.
+          # Catching it here also protects the reporting contract: a
+          # typo in min_severity would otherwise be indistinguishable
+          # from a genuinely clean repository.
+          case "${PERSONA}" in
+            regular | pedantic | auditor) ;;
+            *)
+              echo "::error::persona must be 'regular', 'pedantic' or" \
+                "'auditor' (received: '${PERSONA}')"
+              exit 1
+              ;;
+          esac
+          case "${MIN_SEVERITY}" in
+            unknown | informational | low | medium | high) ;;
+            *)
+              echo "::error::min_severity must be 'unknown'," \
+                "'informational', 'low', 'medium' or 'high'" \
+                "(received: '${MIN_SEVERITY}')"
+              exit 1
+              ;;
+          esac
+          case "${MIN_CONFIDENCE}" in
+            '' | low | medium | high) ;;
+            *)
+              echo "::error::min_confidence must be empty, 'low'," \
+                "'medium' or 'high' (received: '${MIN_CONFIDENCE}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate extra_args input'
+        shell: bash
+        env:
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          # The scan action expands extra-args unquoted so a caller can
+          # pass several flags in one string. That expansion performs
+          # word splitting AND pathname expansion, so an unrestricted
+          # value could glob against the runner filesystem and turn one
+          # argument into many. It does NOT re-scan for command
+          # substitution or control operators, so this is not a command
+          # injection path, but restricting the character set removes
+          # the globbing surface and matches how sibling actions guard
+          # equivalent passthrough inputs.
+          case "${EXTRA_ARGS}" in
+            '') ;;
+            *[!A-Za-z0-9\ ._/=,:@+-]*)
+              echo "::error::Invalid extra_args input; allowed" \
+                "characters: A-Z a-z 0-9 space . _ / = , : @ + -"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate step-summary attribution inputs'
+        shell: bash
+        env:
+          SUMMARY_REPOSITORY: ${{ inputs.summary_repository }}
+          SUMMARY_SHA: ${{ inputs.summary_sha }}
+        run: |
+          # The scan action ignores a partial pair with a warning, which
+          # is easy to miss in a long log. Half-configured attribution
+          # silently produces step-summary links pointing at the wrong
+          # repository, so fail instead.
+          if [ -n "${SUMMARY_REPOSITORY}" ] \
+            && [ -z "${SUMMARY_SHA}" ]; then
+            echo "::error::summary_repository requires summary_sha"
+            exit 1
+          fi
+          if [ -n "${SUMMARY_SHA}" ] \
+            && [ -z "${SUMMARY_REPOSITORY}" ]; then
+            echo "::error::summary_sha requires summary_repository"
+            exit 1
+          fi
+          if [ -n "${SUMMARY_SHA}" ] \
+            && ! [[ "${SUMMARY_SHA}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "::error::summary_sha must be 7-40 hex digits" \
+              "(received: '${SUMMARY_SHA}')"
+            exit 1
+          fi
+
+      - name: 'Validate timeout_minutes input'
+        shell: bash
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          # GitHub permits 1-360 minutes; an out-of-range value fails
+          # the run with an opaque scheduling error.
+          if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] \
+            || [ "${TIMEOUT_MINUTES}" -lt 1 ] \
+            || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
+            echo "::error::timeout_minutes must be an integer 1-360" \
+              "(received: '${TIMEOUT_MINUTES}')"
+            exit 1
+          fi
+
+      - name: 'Validate artifact_retention_days input'
+        if: inputs.upload_sarif
+        shell: bash
+        env:
+          RETENTION_DAYS: ${{ inputs.artifact_retention_days }}
+        run: |
+          # GitHub permits 1-90 days for public repositories. Only
+          # meaningful when the artifact is actually produced, which
+          # happens on the SARIF publishing path.
+          if ! [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] \
+            || [ "${RETENTION_DAYS}" -lt 1 ] \
+            || [ "${RETENTION_DAYS}" -gt 90 ]; then
+            echo "::error::artifact_retention_days must be an integer" \
+              "1-90 (received: '${RETENTION_DAYS}')"
+            exit 1
+          fi
+
+      - name: 'Require Gerrit project, branch and URL'
+        if: inputs.gerrit_refspec != ''
+        shell: bash
+        env:
+          GERRIT_PROJECT: ${{ inputs.gerrit_project }}
+          GERRIT_BRANCH: ${{ inputs.gerrit_branch }}
+          # yamllint disable-line rule:line-length
+          GERRIT_URL: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+        run: |
+          # gerrit_refspec is set, so the Gerrit checkout path runs and
+          # also requires gerrit_project, gerrit_branch and a resolvable
+          # Gerrit URL (the gerrit_url input or the GERRIT_URL variable).
+          missing=''
+          if [ -z "${GERRIT_PROJECT}" ]; then
+            missing="${missing} gerrit_project"
+          fi
+          if [ -z "${GERRIT_BRANCH}" ]; then
+            missing="${missing} gerrit_branch"
+          fi
+          if [ -z "${GERRIT_URL}" ]; then
+            missing="${missing} gerrit_url/GERRIT_URL"
+          fi
+          if [ -n "${missing}" ]; then
+            echo "::error::gerrit_refspec is set but missing:${missing}"
+            exit 1
+          fi
+          echo 'Gerrit inputs validated ✅'
+
+  audit:
+    name: 'Audit Workflows'
+    needs: validate
+    # Skip pushes to non-default branches and tags: the optional SARIF
+    # upload is gated to default-branch pushes, so those events produce
+    # no publishable output. Pull request and workflow_dispatch events
+    # still run the advisory audit, which covers Gerrit dispatch.
+    if: >-
+      github.event_name != 'push'
+      || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      # The bare minimum: check out the repository under audit. SARIF
+      # publishing runs in a separate, gated job that holds the
+      # security-events scope.
+      contents: read
+    steps:
+      - name: 'Load egress allow-list (block mode)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        if: inputs.harden_runner_egress == 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout Gerrit change'
+        if: inputs.gerrit_refspec != ''
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/checkout-gerrit-change-action@f87b90a3370e62dad310797fedc7fd3700c75832  # v1.0.2
+        with:
+          gerrit-refspec: ${{ inputs.gerrit_refspec }}
+          gerrit-project: ${{ inputs.gerrit_project }}
+          # yamllint disable-line rule:line-length
+          gerrit-url: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+          delay: '0s'
+          ref: refs/heads/${{ inputs.gerrit_branch }}
+
+      - name: 'Checkout repository under audit'
+        if: inputs.gerrit_refspec == ''
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: 'Run zizmor audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/zizmor-scan-action@7c402cb62001f13700324e68e841c772571a26c2  # v0.5.0
+        with:
+          persona: ${{ inputs.persona }}
+          min-severity: ${{ inputs.min_severity }}
+          min-confidence: ${{ inputs.min_confidence }}
+          working-directory: ${{ inputs.path_prefix }}
+          zizmor-version: ${{ inputs.zizmor_version }}
+          extra-args: ${{ inputs.extra_args }}
+          summary-repository: ${{ inputs.summary_repository }}
+          summary-sha: ${{ inputs.summary_sha }}
+          # Publishing happens in the gated upload job below, so that
+          # this job never needs security-events: write.
+          upload-sarif: 'false'
+
+      - name: 'Upload SARIF artifact'
+        # Only needed when SARIF publishing is enabled on a default-branch
+        # push, where the upload job consumes it; all other runs skip the
+        # upload entirely, so there is no point producing the artifact.
+        if: >-
+          inputs.upload_sarif
+          && github.event_name == 'push'
+          && github.ref_name == github.event.repository.default_branch
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ github.workspace }}/zizmor.sarif
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: 'error'
+
+  upload:
+    name: 'Publish SARIF'
+    needs: audit
+    if: >-
+      inputs.upload_sarif
+      && github.event_name == 'push'
+      && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      security-events: write  # publish SARIF to code scanning
+      actions: read  # upload-sarif reads run info on private repos
+    steps:
+      - name: 'Load egress allow-list (block mode)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        if: inputs.harden_runner_egress != 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        if: inputs.harden_runner_egress == 'audit'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Download SARIF artifact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: '.'
+
+      # Advisory by design: a code scanning upload failure (a disabled
+      # feature, a quota limit) must not fail a run whose audit already
+      # succeeded and whose findings are in the job summary.
+      - name: 'Upload SARIF to code scanning'
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9  # v4.37.0
+        with:
+          sarif_file: 'zizmor.sarif'
+          category: ${{ inputs.sarif_category }}

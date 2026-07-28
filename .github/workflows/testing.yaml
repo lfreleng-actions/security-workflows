@@ -96,3 +96,34 @@ jobs:
       build_type: 'none'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  # Audit this repository's own workflows. Exercises the lane against a
+  # known-clean target, so a finding here means the lane regressed
+  # rather than the target did. upload_sarif stays false: publishing is
+  # gated to default-branch pushes and this is a workflow_dispatch.
+  zizmor-self:
+    name: 'Zizmor (self)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/zizmor.yaml
+
+  # Audit a fixture repository, which also covers the cross-repository
+  # checkout path and the summary attribution inputs that go with it.
+  zizmor-fixture:
+    name: 'Zizmor (fixture)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/zizmor.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-project'
+      persona: 'regular'
+
+  # Advisory run against this repository. audit_permit_fail is left at
+  # its default so a finding reports without failing the self-test.
+  package-hardening-self:
+    name: 'Package Hardening (self)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package-hardening-audit.yaml
+    with:
+      cooldown_strategy: 'dependabot'
