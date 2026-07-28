@@ -41,8 +41,8 @@ jobs:
     uses: lfreleng-actions/security-workflows/.github/workflows/package-hardening-audit.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
     with:
       cooldown_strategy: 'dependabot'
-    # Optional inputs, shown with their defaults:
-    #   audit_permit_fail: true   # false turns the lane into a gate
-    #   path_prefix: '.'
-    #   runs_on: 'ubuntu-latest'  # Linux or macOS; Windows unsupported
-    #   harden_runner_egress: 'block'
+      # Optional inputs, shown with their defaults:
+      #   audit_permit_fail: true   # false turns the lane into a gate
+      #   path_prefix: '.'
+      #   runs_on: 'ubuntu-latest'  # Linux or macOS; Windows unsupported
+      #   harden_runner_egress: 'block'

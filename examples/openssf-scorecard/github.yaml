@@ -1,0 +1,85 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the OpenSSF Scorecard lane
+# =============================================================================
+# This lane has NO Gerrit variant, which is why this directory holds one
+# example rather than the usual pair. The Scorecard API restricts which
+# actions may run in the job that produces published results, and a Gerrit
+# checkout action is not on that list. Scorecard also scores a repository
+# as a whole rather than a change, so a per-patchset run would not be
+# meaningful even if it were permitted.
+#
+# DEPLOYMENT NOTES:
+#   * Needs no secrets.
+#   * Free for public repositories. Private repositories need GitHub
+#     Advanced Security, plus the extra read permissions noted below.
+#   * Triggers: Scorecard supports push and schedule on the DEFAULT
+#     BRANCH, and running against a fork is unsupported. The set below
+#     adds two more deliberately:
+#       - branch_protection_rule, which the Branch-Protection check
+#         needs in order to score that control at all.
+#       - workflow_dispatch, which upstream classes as experimental. It
+#         is kept because the first run of a new installation is nearly
+#         always a manual one, and waiting for the weekly cron to find
+#         out whether the setup works is a poor first experience. A
+#         manual run DOES publish and will overwrite the current score.
+#         If that is unwanted, drop the trigger, or pass
+#         publish_results: false while testing.
+#   * The caller job must grant id-token: write for publish_results to
+#     work, and that permission must appear on NO other job in the
+#     calling workflow. The Scorecard API rejects results otherwise.
+#   * Keep this file free of top-level env and defaults, and of
+#     workflow-level write permissions, for the same reason.
+#     See https://github.com/ossf/scorecard-action#workflow-restrictions
+#
+# ADD THE BADGE:
+#   Once results publish, add to your README, replacing {owner}/{repo}:
+# yamllint disable-line rule:line-length
+#   [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/{owner}/{repo}/badge)](https://scorecard.dev/viewer/?uri=github.com/{owner}/{repo})
+# =============================================================================
+name: 'Security Scans (Scorecard)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  # For the Branch-Protection check, default branch only
+  branch_protection_rule:
+  # Keeps the Maintained check fresh even when the repository is quiet
+  schedule:
+    - cron: '50 4 * * 0'
+  push:
+    branches: ['main', 'master']
+
+permissions: {}
+
+jobs:
+  openssf-scorecard:
+    name: 'OpenSSF Scorecard'
+    permissions:
+      contents: read  # checkout
+      security-events: write  # upload results to the code scanning dashboard
+      id-token: write  # publish results and obtain the badge, via OIDC
+      actions: read  # upload-sarif reads run info on private repositories
+      # Private repositories additionally need these reads, or Scorecard
+      # reports 'Resource not accessible by integration' and loses the
+      # commit and SAST signals:
+      # issues: read
+      # pull-requests: read
+      # checks: read
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/openssf-scorecard.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    # Optional inputs, shown with their defaults:
+    #  with:
+    #   publish_results: true       # false keeps results private, no badge
+    #   upload_sarif: true          # needs results_format 'sarif'
+    #   results_format: 'sarif'     # 'json' is API-only, no dashboard
+    #   file_mode: 'archive'        # or 'git'
+    #   summary_enabled: true       # adds a link to the published report
+    #   runs_on: 'ubuntu-latest'    # must be an Ubuntu hosted runner
+    #   harden_runner_egress: 'block'
+    #   extra_allowed_endpoints: '' # widen the scan job's curated list

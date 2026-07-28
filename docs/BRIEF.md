@@ -96,12 +96,15 @@ build with a scan, and each was a source of intra-repository
 cross-references. Their behaviour folds into a `build_type` input on the
 relevant lane. Net: fifteen files become six lanes.
 
-One filename collision remains to resolve. This repository already
-carries `.github/workflows/openssf-scorecard.yaml`, its own Scorecard
-self-scan, and the planned lane wants the same name. The self-scan is a
+The lane and this repository's own Scorecard self-scan wanted the same
+filename, and could not merge into one file: the self-scan is a
 `push`/`schedule`/`branch_protection_rule` workflow and the lane is
-`workflow_call`, so they cannot merge into one file. Whichever is
-renamed, the other keeps the obvious name; decide when that lane lands.
+`workflow_call`. The lane keeps the canonical
+`openssf-scorecard.yaml`, because that is the name consumers write in
+their `uses:` line, and the self-scan becomes
+`openssf-scorecard-self.yaml`. The self-scan now calls the lane by
+local path, so the repository dogfoods what it publishes and drops its
+last dependency on `lfit/releng-reusable-workflows`.
 
 ## Design decisions
 
@@ -278,6 +281,44 @@ Making the lane gateable belongs in the action, not here: a
 `zizmor-scan-action` would let every consumer gate, whereas parsing the
 SARIF inside the lane would put language-specific logic in a workflow
 that should be action calls. Tracked as a follow-up.
+
+### D15 — Scorecard's publish rules shape the whole lane
+
+When `publish_results` is on, the Scorecard API validates the workflow
+that produced the results and rejects anything outside a narrow shape.
+Every way this lane differs from its siblings traces back to that.
+
+The scan job may only run steps from `actions/checkout`,
+`actions/upload-artifact`, `github/codeql-action/upload-sarif`,
+`ossf/scorecard-action` and `step-security/harden-runner`. So the shared
+`harden-runner-block-action` loader cannot run there, and the scan job
+carries a curated inline allow-list, widened by
+`extra_allowed_endpoints` rather than by forking. The summary job has no
+such restriction and uses the shared loader.
+
+The scan job may not declare job-level `env` or `defaults`, which is why
+input validation sits in its own job. That constraint turned out to be
+an improvement: the checks now run before the analysis starts, so a bad
+input costs seconds rather than a full scan followed by an opaque API
+rejection.
+
+The rules also reach the whole file: no top-level `env` or `defaults`,
+no workflow-level write permissions, and `id-token: write` on the scan
+job alone. They reach the *caller* too, which is why the example spells
+them out.
+
+Two things were verified against a live run rather than assumed.
+Publishing does work through the reusable-workflow indirection: the
+Scorecard API returns a current score for this repository, produced by a
+caller plus reusable pair. And `ghcr.io` is deliberately absent from the
+curated allow-list even though `ossf/scorecard-action` is a Docker
+action; the image pull was confirmed to succeed under that exact list,
+so it must not be added speculatively.
+
+There is no `repository` or `ref` input. Scorecard reads
+`GITHUB_REPOSITORY` and queries the GitHub API, so checking out a
+different repository would change the working tree without changing what
+is scored — an input that appeared to work and silently did nothing.
 
 ### Legacy defects not carried forward
 

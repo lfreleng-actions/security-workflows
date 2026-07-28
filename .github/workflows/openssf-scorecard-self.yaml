@@ -1,0 +1,49 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2025 The Linux Foundation
+
+# This repository's OWN OpenSSF Scorecard assessment.
+#
+# Named openssf-scorecard-self.yaml to leave the canonical
+# openssf-scorecard.yaml name to the reusable lane that consumers call.
+# The two cannot be one file: this is a push/schedule/branch_protection
+# workflow and the lane is workflow_call.
+#
+# It calls the lane by LOCAL path, so the repository dogfoods the lane
+# it publishes and a regression shows up here first. That also removes
+# the last dependency on lfit/releng-reusable-workflows, which this
+# repository replaces.
+#
+# The Scorecard API validates the producing workflow when publishing,
+# so keep this file within the rules: no top-level env or defaults, no
+# workflow-level write permissions, and id-token: write only on the job
+# that reaches the analysis. See
+# https://github.com/ossf/scorecard-action#workflow-restrictions
+name: 'OpenSSF Scorecard'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  # For the Branch-Protection check, which supports the default branch
+  # only. See
+  # https://github.com/ossf/scorecard/blob/main/docs/checks.md#branch-protection
+  branch_protection_rule:
+  # Keeps the Maintained check fresh even when the repository is quiet.
+  # See https://github.com/ossf/scorecard/blob/main/docs/checks.md#maintained
+  schedule:
+    - cron: '50 4 * * 0'
+  push:
+    branches: ['main', 'master']
+
+# Declare default permissions as none.
+permissions: {}
+
+jobs:
+  openssf-scorecard:
+    name: 'OpenSSF Scorecard'
+    uses: ./.github/workflows/openssf-scorecard.yaml
+    permissions:
+      contents: read  # checkout
+      security-events: write  # upload results to the code scanning dashboard
+      id-token: write  # publish results and obtain the badge, via OIDC
+      actions: read  # upload-sarif reads run info on private repositories
