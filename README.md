@@ -31,7 +31,7 @@ and picks up the security lanes from
 
 | Lane | Purpose | Status |
 | ---- | ------- | ------ |
-| `sonatype-lifecycle.yaml` | Nexus IQ CLM dependency scan, with optional pre-scan build | Planned |
+| `sonatype-lifecycle.yaml` | Nexus IQ CLM dependency scan, with optional pre-scan build | **Available** |
 | `sonarqube-cloud.yaml` | SonarQube Cloud static analysis | Planned |
 | `zizmor.yaml` | GitHub Actions workflow audit, SARIF publishing | Planned |
 | `openssf-scorecard.yaml` | OpenSSF Scorecard supply-chain health | Planned |

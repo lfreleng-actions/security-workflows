@@ -1,0 +1,46 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the Sonatype Lifecycle (CLM) lane
+# =============================================================================
+# Use this form for projects where GitHub is the source of truth.
+#
+# DEPLOYMENT NOTES:
+#   * Set the repository variables NEXUS_IQ_SERVER and NEXUS_IQ_USERNAME,
+#     and the secret NEXUS_IQ_PASSWORD.
+#   * A scheduled run keeps the Nexus IQ application current even when the
+#     project is quiet: dependency risk changes without the code changing.
+# =============================================================================
+name: 'Security Scans (CLM)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main', 'master']
+  schedule:
+    # Odd minute so GitHub's queue randomises the exact start time
+    - cron: '37 0 * * 6'
+
+permissions: {}
+
+jobs:
+  sonatype-lifecycle:
+    name: 'Sonatype Lifecycle'
+    permissions:
+      contents: read
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/sonatype-lifecycle.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    # Optional inputs, shown with their defaults:
+    #  with:
+    #   build_type: 'none'          # 'maven' or 'gradle' to build first
+    #   java_version: ''            # build JDK; empty auto-detects
+    #   iq_java_version: '17'       # Nexus IQ CLI runtime JDK
+    #   scan_targets: '.'           # file(s)/folder(s) to scan
+    #   harden_runner_egress: 'block'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
