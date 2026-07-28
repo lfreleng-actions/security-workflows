@@ -4,5 +4,5 @@
 
 # Path-specific configurations.
 # (No ignore rules currently required; add path-scoped ignores here as
-# needed when instantiating this template.)
+# needed.)
 paths: {}
