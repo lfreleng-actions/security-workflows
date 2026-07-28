@@ -1,0 +1,790 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# SonarQube Cloud static analysis.
+#
+#   validate -> scan
+#
+# Sonar analyses source, but several analysers need more than source to
+# say anything useful. The Java analyser reads compiled bytecode, and
+# coverage metrics come from a report the project's own test run emits.
+# A scan without those stages still succeeds; it simply reports near-zero
+# coverage and misses every bytecode-derived finding, which is worse than
+# an outright failure because the dashboard looks healthy. The build_type
+# input therefore runs the appropriate stage inside the scan job, so the
+# build and the scanner share a workspace with no artefact plumbing.
+#
+# C and C++ projects take a different path. Their analyser needs a
+# compilation database captured by SonarSource's build-wrapper, which
+# wraps the build rather than running beside it, so it belongs to the
+# scan action (build_wrapper_url) and not to build_type. Projects that
+# need some other pre-scan step, and whose language is not one of the
+# build_type options, can point prescan_script_url at a script.
+#
+# Nothing organisation-specific lives in this lane. The Sonar host,
+# organisation and project key are all caller-supplied, and the Maven
+# credential inputs mirror the CLM lane so a project configures both the
+# same way.
+#
+# Call this from a thin caller workflow; see examples/sonarqube-cloud/
+name: '[R] SonarQube Cloud ☁️'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      # --- Checkout target (defaults to the calling repository) ---
+      repository:
+        description: 'Repository to check out (owner/name)'
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: >-
+          Branch/tag/SHA to check out. Empty uses the triggering
+          event's ref for same-repository checkouts, or the default
+          branch when checking out a different repository.
+        required: false
+        type: string
+        default: ''
+      fetch_depth:
+        description: >-
+          Git history depth. Sonar derives new-code detection and issue
+          attribution from commit history, so the default of 0 (full
+          history) is deliberate; shallow clones degrade both.
+        required: false
+        type: number
+        default: 0
+      submodules:
+        description: >-
+          Submodule checkout: 'false', 'true' or 'recursive'. Sonar
+          analyses whatever is on disk, so projects whose sources live
+          in submodules need this set.
+        required: false
+        type: string
+        default: 'false'
+
+      # --- Project layout ---
+      path_prefix:
+        description: >-
+          Path to the project root directory. Used both as the build
+          working directory and as Sonar's projectBaseDir, so
+          sonar-project.properties is expected to live here.
+        required: false
+        type: string
+        default: '.'
+
+      # --- SonarQube Cloud analysis ---
+      sonar_host_url:
+        description: 'Uploads scans to the given host URL'
+        required: false
+        type: string
+        default: 'https://sonarcloud.io'
+      sonar_organization:
+        description: >-
+          Sonar organisation (sonar.organization). Empty leaves the
+          value to sonar-project.properties.
+        required: false
+        type: string
+        default: ''
+      sonar_project_key:
+        description: >-
+          Sonar project key (sonar.projectKey), for example
+          onap_usecase-ui. Empty leaves the value to
+          sonar-project.properties.
+        required: false
+        type: string
+        default: ''
+      sonar_branch_name:
+        description: >-
+          Analysis branch name (sonar.branch.name). Useful under
+          Gerrit, where the GitHub-side branch decoration Sonar would
+          otherwise infer does not describe the change.
+        required: false
+        type: string
+        default: ''
+      sonar_branch_target:
+        description: 'Analysis target branch (sonar.branch.target)'
+        required: false
+        type: string
+        default: ''
+      sonar_root_cert:
+        description: 'Server root certificate, PEM encoded'
+        required: false
+        type: string
+        default: ''
+      scanner_args:
+        description: 'Extra arguments for the Sonar Scanner CLI'
+        required: false
+        type: string
+        default: '-Dsonar.scanner.cache.enabled=false'
+      scanner_version:
+        description: >-
+          Sonar Scanner CLI version. Empty tracks the scan action's
+          default.
+        required: false
+        type: string
+        default: ''
+      skip_jre_provisioning:
+        description: >-
+          Skip the scanner's own JRE provisioning. SonarSource ends
+          support for the bundled Java 17 runtime in July 2026, so
+          leaving provisioning enabled keeps the runtime current.
+        required: false
+        type: boolean
+        default: false
+      lc_all:
+        description: >-
+          Locale for the scan. Change when the code character set falls
+          outside en_US.UTF-8.
+        required: false
+        type: string
+        default: 'en_US.UTF-8'
+      wait_for_quality_gate:
+        description: 'Poll the quality gate after analysis completes'
+        required: false
+        type: boolean
+        default: false
+      fail_on_quality_gate:
+        description: >-
+          Fail the lane when the quality gate is not OK. Requires
+          wait_for_quality_gate.
+        required: false
+        type: boolean
+        default: false
+      debug:
+        description: 'Enable debugging output'
+        required: false
+        type: boolean
+        default: false
+
+      # --- Pre-scan hooks handled by the scan action ---
+      build_wrapper_url:
+        description: >-
+          HTTPS URL of a C/C++ build script to run under SonarSource's
+          build-wrapper. Mutually exclusive with prescan_script_url and
+          with a build_type other than 'none'.
+        required: false
+        type: string
+        default: ''
+      build_wrapper_out_dir:
+        description: 'Directory for build-wrapper output'
+        required: false
+        type: string
+        default: ''
+      prescan_script_url:
+        description: >-
+          HTTPS URL of a script to run after checkout and before the
+          scan, WITHOUT the C/C++ build wrapper. Use for languages that
+          need a pre-scan step, such as generating a coverage report,
+          that build_type does not cover.
+        required: false
+        type: string
+        default: ''
+
+      # --- Pre-scan build ---
+      build_type:
+        description: >-
+          Pre-scan build stage: 'none', 'maven', 'gradle', 'tox' or
+          'go'
+        required: false
+        type: string
+        default: 'none'
+      build_permit_fail:
+        description: >-
+          Scan even when the pre-scan build fails. Defaults to false,
+          unlike the CLM lane: a failed build leaves Sonar with no
+          bytecode and no coverage report, so it reports a misleadingly
+          healthy project rather than a partial result.
+        required: false
+        type: boolean
+        default: false
+
+      # --- Build: JVM (maven, gradle) ---
+      java_version:
+        description: >-
+          Java version for the pre-scan build. Empty auto-detects from
+          the project.
+        required: false
+        type: string
+        default: ''
+      java_distribution:
+        description: 'Java distribution for the pre-scan build'
+        required: false
+        type: string
+        default: 'temurin'
+      mvn_version:
+        description: 'Maven version'
+        required: false
+        type: string
+        default: '3.9.5'
+      mvn_phases:
+        description: 'Maven phases to run'
+        required: false
+        type: string
+        default: 'verify'
+      mvn_profiles:
+        description: 'Comma-separated Maven profiles to activate'
+        required: false
+        type: string
+        default: ''
+      mvn_params:
+        description: 'Extra Maven parameters'
+        required: false
+        type: string
+        default: ''
+      mvn_opts:
+        description: 'Value for MAVEN_OPTS'
+        required: false
+        type: string
+        default: ''
+      gradle_version:
+        description: 'Gradle version'
+        required: false
+        type: string
+        default: ''
+      build_arguments:
+        description: >-
+          Gradle build arguments. Include the task that produces a
+          coverage report, for example 'build jacocoTestReport'.
+        required: false
+        type: string
+        default: ''
+
+      # --- Build: Python (tox) ---
+      python_version:
+        description: 'Python version for the tox run'
+        required: false
+        type: string
+        default: ''
+      python_version_file:
+        description: 'File to read the Python version from'
+        required: false
+        type: string
+        default: ''
+      tox_envs:
+        description: >-
+          Tox environments to run. Choose the environment that emits
+          the coverage report referenced by sonar-project.properties.
+        required: false
+        type: string
+        default: ''
+      tox_parallel:
+        description: "Tox parallelism, for example 'auto' or '4'"
+        required: false
+        type: string
+        default: 'auto'
+
+      # --- Build: Go ---
+      go_version:
+        description: >-
+          Go version. Empty reads the version from go_version_file.
+        required: false
+        type: string
+        default: ''
+      go_version_file:
+        description: 'Go version file, relative to path_prefix'
+        required: false
+        type: string
+        default: 'go.mod'
+      go_test_target:
+        description: 'Go package pattern(s) to test'
+        required: false
+        type: string
+        default: './...'
+      go_test_args:
+        description: 'Extra go test flags'
+        required: false
+        type: string
+        default: ''
+      go_make_args:
+        description: >-
+          Run the project's Makefile instead of the built-in go test.
+          For projects that must build before testing.
+        required: false
+        type: string
+        default: ''
+
+      # --- Maven repository credentials (synthesised settings.xml) ---
+      maven_server_ids:
+        description: >-
+          Comma-separated Maven server ids to synthesise into a
+          settings.xml. Leave empty to skip synthesis.
+        required: false
+        type: string
+        default: ''
+      maven_server_username:
+        description: >-
+          Username applied to every synthesised server entry. An input
+          rather than a secret so a caller can derive it without
+          redaction concerns.
+        required: false
+        type: string
+        default: ''
+      maven_mirror_id:
+        description: 'Maven mirror id'
+        required: false
+        type: string
+        default: ''
+      maven_mirror_url:
+        description: 'Maven mirror URL'
+        required: false
+        type: string
+        default: ''
+      maven_mirror_of:
+        description: 'Maven mirror-of expression'
+        required: false
+        type: string
+        default: ''
+      maven_profile_id:
+        description: 'Maven profile id for the repository definition'
+        required: false
+        type: string
+        default: ''
+      maven_profile_repository_url:
+        description: >-
+          Repository URL for the synthesised Maven profile
+        required: false
+        type: string
+        default: ''
+
+      # --- Job timeout ---
+      timeout_minutes:
+        description: 'Timeout (minutes) for the scan job'
+        required: false
+        type: number
+        default: 45
+
+      # --- Runner hardening ---
+      harden_runner_egress:
+        description: "Harden-runner egress policy: 'block' or 'audit'"
+        required: false
+        type: string
+        default: 'block'
+      build_permit_egress_traffic:
+        description: >-
+          Run harden-runner in audit mode, permitting unrestricted
+          egress. Use when a pre-scan build fetches dependencies from
+          CDNs that are impractical to enumerate in the allow-list.
+          The build runs inside the scan job, so the exemption covers
+          the whole job.
+        required: false
+        type: boolean
+        default: false
+      harden_runner_allowlist:
+        description: 'Out-of-band harden-runner allow-list configuration'
+        required: false
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@4d8825761e149992652bccf8aa0de72d79903853'  # v0.10.0
+
+      # --- Gerrit-aware checkout (empty unless dispatched via Gerrit) ---
+      gerrit_refspec:
+        description: 'Gerrit refspec of the change under test'
+        required: false
+        type: string
+        default: ''
+      gerrit_project:
+        description: 'Gerrit project name'
+        required: false
+        type: string
+        default: ''
+      gerrit_branch:
+        description: 'Gerrit target branch'
+        required: false
+        type: string
+        default: ''
+      gerrit_url:
+        description: >-
+          Gerrit server URL. Empty falls back to the GERRIT_URL
+          repository variable at runtime.
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      sonar_token:
+        description: 'SonarQube Cloud API token'
+        required: true
+      maven_server_password:
+        description: >-
+          Password applied to every synthesised Maven server entry.
+          Used only when maven_server_ids is set.
+        required: false
+      maven_global_settings:
+        description: >-
+          A complete Maven settings.xml for the pre-scan build, as an
+          alternative to synthesising one from the maven_* inputs. It
+          carries repository credentials, so it is a secret rather than
+          an input. Store the whole document as a repository secret
+          rather than routing it through a job output, which GitHub
+          redacts when it contains registered secrets.
+        required: false
+
+permissions: {}
+
+jobs:
+  validate:
+    name: 'Validate Workflow Inputs'
+    # Fails fast with a clear message when inputs are inconsistent. The
+    # scan job depends on this, so invalid input stops the pipeline
+    # early and cleanly. This job always runs (only the validation steps
+    # are conditional), so gating dependents on it does not trip
+    # GitHub's "skipped need skips dependents" behaviour.
+    #
+    # The job carries no harden-runner step by design: it performs pure
+    # input-string validation with no checkout, artifacts or network
+    # access, and loading the egress allow-list would itself add an
+    # outbound call.
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: 'Validate path_prefix input'
+        shell: bash
+        env:
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+        run: |
+          # Require a relative, non-traversing path: it becomes both
+          # the build working directory and Sonar's projectBaseDir, so
+          # an empty value, absolute paths or .. segments could escape
+          # the checkout. A single trailing slash is tolerated.
+          PATH_PREFIX="${PATH_PREFIX%/}"
+          if [ "${PATH_PREFIX}" = '.' ]; then
+            exit 0
+          fi
+          if [[ ! "${PATH_PREFIX}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] \
+            || [[ "${PATH_PREFIX}" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::Invalid path_prefix input: ${PATH_PREFIX}"
+            exit 1
+          fi
+
+      - name: 'Validate build_type input'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          # Reject typos early: an unrecognised build_type would
+          # otherwise skip the build stage silently and scan a
+          # workspace with no compiled output or coverage report.
+          case "${BUILD_TYPE}" in
+            none | maven | gradle | tox | go) ;;
+            *)
+              echo "::error::build_type must be 'none', 'maven'," \
+                "'gradle', 'tox' or 'go' (received: '${BUILD_TYPE}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate fetch_depth input'
+        shell: bash
+        env:
+          FETCH_DEPTH: ${{ inputs.fetch_depth }}
+        run: |
+          # actions/checkout treats a negative or non-integer depth as a
+          # git error deep inside the checkout, long after the job has
+          # hardened and started. 0 is legitimate and means full
+          # history, which is the default here.
+          if ! [[ "${FETCH_DEPTH}" =~ ^[0-9]+$ ]]; then
+            echo "::error::fetch_depth must be a non-negative integer" \
+              "(received: '${FETCH_DEPTH}')"
+            exit 1
+          fi
+
+      - name: 'Validate submodules input'
+        shell: bash
+        env:
+          SUBMODULES: ${{ inputs.submodules }}
+        run: |
+          # actions/checkout treats any unrecognised value as false,
+          # so a typo would silently leave submodule sources out of
+          # the analysis.
+          case "${SUBMODULES}" in
+            true | false | recursive) ;;
+            *)
+              echo "::error::submodules must be 'true', 'false' or" \
+                "'recursive' (received: '${SUBMODULES}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate pre-scan hook combination'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+          BUILD_WRAPPER_URL: ${{ inputs.build_wrapper_url }}
+          PRESCAN_SCRIPT_URL: ${{ inputs.prescan_script_url }}
+        run: |
+          # Each of these populates the workspace before the scan, and
+          # combining them means building twice with the second run
+          # overwriting the first. The scan action rejects the
+          # wrapper/prescan pair itself, but only once the job has
+          # already checked out and hardened, so check here too.
+          if [ -n "${BUILD_WRAPPER_URL}" ] \
+            && [ -n "${PRESCAN_SCRIPT_URL}" ]; then
+            echo "::error::build_wrapper_url and prescan_script_url" \
+              "are mutually exclusive"
+            exit 1
+          fi
+          if [ "${BUILD_TYPE}" != 'none' ]; then
+            if [ -n "${BUILD_WRAPPER_URL}" ] \
+              || [ -n "${PRESCAN_SCRIPT_URL}" ]; then
+              echo "::error::build_type '${BUILD_TYPE}' cannot combine" \
+                "with build_wrapper_url or prescan_script_url"
+              exit 1
+            fi
+          fi
+
+      - name: 'Validate quality gate inputs'
+        if: inputs.fail_on_quality_gate
+        shell: bash
+        run: |
+          # fail_on_quality_gate is a no-op without the poll that
+          # produces a gate status, so the lane would report success
+          # on a failing gate. Fail rather than mislead.
+          if [ "${WAIT_FOR_QUALITY_GATE}" != 'true' ]; then
+            echo "::error::fail_on_quality_gate requires" \
+              "wait_for_quality_gate"
+            exit 1
+          fi
+        env:
+          WAIT_FOR_QUALITY_GATE: ${{ inputs.wait_for_quality_gate }}
+
+      - name: 'Validate timeout_minutes input'
+        shell: bash
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          # GitHub permits 1-360 minutes; an out-of-range value fails
+          # the run with an opaque scheduling error.
+          if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] \
+            || [ "${TIMEOUT_MINUTES}" -lt 1 ] \
+            || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
+            echo "::error::timeout_minutes must be an integer 1-360" \
+              "(received: '${TIMEOUT_MINUTES}')"
+            exit 1
+          fi
+
+      - name: 'Require Gerrit project, branch and URL'
+        if: inputs.gerrit_refspec != ''
+        shell: bash
+        env:
+          GERRIT_PROJECT: ${{ inputs.gerrit_project }}
+          GERRIT_BRANCH: ${{ inputs.gerrit_branch }}
+          # yamllint disable-line rule:line-length
+          GERRIT_URL: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+        run: |
+          # gerrit_refspec is set, so the Gerrit checkout path runs and
+          # also requires gerrit_project, gerrit_branch and a resolvable
+          # Gerrit URL (the gerrit_url input or the GERRIT_URL variable).
+          missing=''
+          if [ -z "${GERRIT_PROJECT}" ]; then
+            missing="${missing} gerrit_project"
+          fi
+          if [ -z "${GERRIT_BRANCH}" ]; then
+            missing="${missing} gerrit_branch"
+          fi
+          if [ -z "${GERRIT_URL}" ]; then
+            missing="${missing} gerrit_url/GERRIT_URL"
+          fi
+          if [ -n "${missing}" ]; then
+            echo "::error::gerrit_refspec is set but missing:${missing}"
+            exit 1
+          fi
+          echo 'Gerrit inputs validated ✅'
+
+  scan:
+    name: 'Scan'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      # The workflow checks out the repository under analysis. Results
+      # go to SonarQube Cloud over the network, not to GitHub code
+      # scanning, so no security-events permission is needed.
+      contents: read
+    steps:
+      # This lane runs any pre-scan build inside the scan job, so the
+      # build_permit_egress_traffic exemption necessarily covers the
+      # whole job rather than a separate build job. Left unset, the job
+      # follows harden_runner_egress like every other job.
+      - name: 'Load egress allow-list (block mode)'
+        # yamllint disable-line rule:line-length
+        if: ${{ !inputs.build_permit_egress_traffic && inputs.harden_runner_egress != 'audit' }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        if: ${{ !inputs.build_permit_egress_traffic && inputs.harden_runner_egress != 'audit' }}
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_permit_egress_traffic || inputs.harden_runner_egress == 'audit' }}
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout Gerrit change'
+        if: inputs.gerrit_refspec != ''
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/checkout-gerrit-change-action@f87b90a3370e62dad310797fedc7fd3700c75832  # v1.0.2
+        with:
+          gerrit-refspec: ${{ inputs.gerrit_refspec }}
+          gerrit-project: ${{ inputs.gerrit_project }}
+          # yamllint disable-line rule:line-length
+          gerrit-url: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+          delay: '0s'
+          ref: refs/heads/${{ inputs.gerrit_branch }}
+          fetch-depth: ${{ inputs.fetch_depth }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: 'Checkout repository'
+        if: inputs.gerrit_refspec == ''
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: ${{ inputs.fetch_depth }}
+          submodules: ${{ inputs.submodules }}
+          persist-credentials: false
+
+      # Detect the project's Java version so the pre-scan build uses the
+      # toolchain the project expects. Only relevant for JVM builds.
+      - name: 'Gather build metadata'
+        id: metadata
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_type == 'maven' || inputs.build_type == 'gradle' }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/build-metadata-action@0f81bc87b65e73729f704683f84a497eacb12f49  # v0.7.0
+        with:
+          path_prefix: ${{ inputs.path_prefix }}
+
+      # Synthesise settings.xml here rather than in the caller: a caller
+      # would have to route the document through a job output, and
+      # GitHub redacts outputs containing registered secrets, so the
+      # masked password would arrive as '***'.
+      - name: 'Generate Maven settings.xml'
+        id: settings
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_type == 'maven' && inputs.maven_server_ids != '' }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/maven-xml-settings-action@e40c793acc0f688303943189858c0645ba906881  # v0.1.0
+        with:
+          server-ids: ${{ inputs.maven_server_ids }}
+          username: ${{ inputs.maven_server_username }}
+          password: ${{ secrets.maven_server_password }}
+          mirror-id: ${{ inputs.maven_mirror_id }}
+          mirror-url: ${{ inputs.maven_mirror_url }}
+          mirror-of: ${{ inputs.maven_mirror_of }}
+          profile-id: ${{ inputs.maven_profile_id }}
+          profile-repository-url: ${{ inputs.maven_profile_repository_url }}
+
+      # The build stages below all use continue-on-error rather than any
+      # per-action soft-fail input, so build_permit_fail behaves
+      # identically whichever build_type is selected.
+      - name: 'Maven build'
+        if: inputs.build_type == 'maven'
+        continue-on-error: ${{ inputs.build_permit_fail }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/maven-build-action@79f0851d13bde7aed47a967bfd72682101756f7f  # v0.3.0
+        with:
+          path_prefix: ${{ inputs.path_prefix }}
+          # yamllint disable-line rule:line-length
+          java-version: ${{ inputs.java_version != '' && inputs.java_version || steps.metadata.outputs.java_version || '21' }}
+          distribution: ${{ inputs.java_distribution }}
+          mvn-version: ${{ inputs.mvn_version }}
+          mvn-phases: ${{ inputs.mvn_phases }}
+          mvn-profiles: ${{ inputs.mvn_profiles }}
+          mvn-params: ${{ inputs.mvn_params }}
+          mvn-opts: ${{ inputs.mvn_opts }}
+          # yamllint disable-line rule:line-length
+          global-settings: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
+          # Sonar reads coverage from the JaCoCo report, so produce one.
+          run-jacoco: 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Gradle build'
+        if: inputs.build_type == 'gradle'
+        continue-on-error: ${{ inputs.build_permit_fail }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/gradle-build-action@fec7e8a18d3edde71e21012c56fcd5721a0e3128  # v0.5.0
+        with:
+          # Renamed to path_prefix upstream; 'path' remains the
+          # released input name at this pin.
+          path: ${{ inputs.path_prefix }}
+          # yamllint disable-line rule:line-length
+          java-version: ${{ inputs.java_version != '' && inputs.java_version || steps.metadata.outputs.java_version || '21' }}
+          distribution: ${{ inputs.java_distribution }}
+          gradle-version: ${{ inputs.gradle_version }}
+          build-arguments: ${{ inputs.build_arguments }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Tox run'
+        if: inputs.build_type == 'tox'
+        continue-on-error: ${{ inputs.build_permit_fail }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/tox-run-action@9a4e2f4a9abddb5c674b8e0debb6d2a1318b7b7f  # v0.1.2
+        with:
+          path_prefix: ${{ inputs.path_prefix }}
+          python-version: ${{ inputs.python_version }}
+          python-version-file: ${{ inputs.python_version_file }}
+          tox-envs: ${{ inputs.tox_envs }}
+          parallel: ${{ inputs.tox_parallel }}
+
+      # Writes coverage.out into path_prefix, which is also Sonar's
+      # projectBaseDir, so the default sonar.go.coverage.reportPaths
+      # resolves without further configuration.
+      - name: 'Go test'
+        if: inputs.build_type == 'go'
+        continue-on-error: ${{ inputs.build_permit_fail }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/go-test-action@5caee8cfff691851b3eed6748373d5aabfd926a7  # v0.1.0
+        with:
+          path_prefix: ${{ inputs.path_prefix }}
+          go_version: ${{ inputs.go_version }}
+          go_version_file: ${{ inputs.go_version_file }}
+          test_target: ${{ inputs.go_test_target }}
+          test_args: ${{ inputs.go_test_args }}
+          make_args: ${{ inputs.go_make_args }}
+          coverage: 'true'
+
+      # no_checkout is 'true' because this workflow has already checked
+      # out the code, and any pre-scan build has populated the
+      # workspace. Letting the action check out again would discard the
+      # compiled output and coverage reports the scan depends on.
+      - name: 'SonarQube Cloud scan'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/sonarqube-cloud-scan-action@0f7a9fa8e3e77663a007d6f6f19752c8dacf7def  # v1.4.0
+        with:
+          sonar_token: ${{ secrets.sonar_token }}
+          no_checkout: 'true'
+          project_base_dir: ${{ inputs.path_prefix }}
+          sonar_host_url: ${{ inputs.sonar_host_url }}
+          sonar_organization: ${{ inputs.sonar_organization }}
+          sonar_project_key: ${{ inputs.sonar_project_key }}
+          sonar_branch_name: ${{ inputs.sonar_branch_name }}
+          sonar_branch_target: ${{ inputs.sonar_branch_target }}
+          sonar_root_cert: ${{ inputs.sonar_root_cert }}
+          args: ${{ inputs.scanner_args }}
+          scanner_version: ${{ inputs.scanner_version }}
+          skip_jre_provisioning: ${{ inputs.skip_jre_provisioning }}
+          build_wrapper_url: ${{ inputs.build_wrapper_url }}
+          build_wrapper_out_dir: ${{ inputs.build_wrapper_out_dir }}
+          prescan_script_url: ${{ inputs.prescan_script_url }}
+          lc_all: ${{ inputs.lc_all }}
+          wait_for_quality_gate: ${{ inputs.wait_for_quality_gate }}
+          fail_on_quality_gate: ${{ inputs.fail_on_quality_gate }}
+          debug: ${{ inputs.debug }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
