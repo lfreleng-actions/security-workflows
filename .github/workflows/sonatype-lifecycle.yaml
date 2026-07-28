@@ -1,0 +1,586 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Sonatype Lifecycle (Nexus IQ) dependency scan.
+#
+#   gerrit-validate -> scan
+#
+# The scan evaluates resolved dependencies against Nexus IQ policy. For
+# ecosystems where dependencies only resolve at build time (Maven,
+# Gradle), an optional pre-scan build populates the workspace first via
+# the build_type input; the build runs inside the scan job so both share
+# a workspace without artefact plumbing.
+#
+# The build JDK and the Nexus IQ CLI runtime JDK are configured
+# INDEPENDENTLY. IQ CLI 2.x requires Java 17, while projects frequently
+# build with older JDKs; driving both from one version is what produced
+# UnsupportedClassVersionError across the ONAP estate. java_version
+# governs the build (auto-detected when unset) and iq_java_version the
+# CLI.
+#
+# Credential handling has two paths, both optional. Where the caller can
+# store a complete settings.xml as a repository secret, pass it as
+# maven_global_settings. Where credentials vary per repository, supply
+# the server shape as inputs plus a maven_server_password secret and the
+# lane synthesises settings.xml with maven-xml-settings-action, in the
+# same job as the build. Synthesising here rather than in the caller
+# matters: a caller would have to route the document through a job
+# output, and GitHub redacts outputs containing registered secrets, so
+# the masked password would arrive as '***'.
+#
+# Nothing organisation-specific lives in this lane. The server ids,
+# mirror and profile are all caller-supplied, and the username is an
+# input rather than a secret so a caller can derive it (from a project
+# name, say) and pass it without redaction concerns.
+#
+# Call this from a thin caller workflow; see examples/sonatype-lifecycle/
+name: '[R] Sonatype Lifecycle 🔐'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      # --- Checkout target (defaults to the calling repository) ---
+      repository:
+        description: 'Repository to check out (owner/name)'
+        required: false
+        type: string
+        default: ''
+      ref:
+        description: >-
+          Branch/tag/SHA to check out. Empty uses the triggering
+          event's ref for same-repository checkouts, or the default
+          branch when checking out a different repository.
+        required: false
+        type: string
+        default: ''
+
+      # --- Project layout ---
+      path_prefix:
+        description: 'Path to the project root directory'
+        required: false
+        type: string
+        default: '.'
+
+      # --- Nexus IQ scan ---
+      application_id:
+        description: >-
+          Organisation and project name in Nexus IQ. Empty derives
+          <owner>-<name> from the repository actually under scan, which
+          is the `repository` input when set and the calling repository
+          otherwise.
+        required: false
+        type: string
+        default: ''
+      scan_targets:
+        description: 'File(s) or folder(s) to scan'
+        required: false
+        type: string
+        default: '.'
+      iq_cli_version:
+        description: >-
+          Nexus IQ CLI version. Mirrors the scan action's own default;
+          review when the pinned action version changes.
+        required: false
+        type: string
+        default: '2.13.0-01'
+      iq_java_version:
+        description: >-
+          Java runtime for the Nexus IQ CLI. Independent of java_version,
+          which governs the pre-scan build. IQ CLI 2.x requires Java 17.
+        required: false
+        type: string
+        default: '17'
+      iq_java_distribution:
+        description: 'JAVA SE distribution for the Nexus IQ CLI'
+        required: false
+        type: string
+        default: 'temurin'
+      advanced_properties:
+        description: 'Additional properties passed to the Nexus IQ CLI'
+        required: false
+        type: string
+        default: ''
+      ignore_scanning_errors:
+        description: 'Permit scanning errors without failing the job'
+        required: false
+        type: boolean
+        default: false
+      ignore_system_errors:
+        description: 'Permit Nexus IQ system errors without failing'
+        required: false
+        type: boolean
+        default: false
+      fail_on_policy_warnings:
+        description: 'Fail the job on policy warnings, not just failures'
+        required: false
+        type: boolean
+        default: false
+      debug:
+        description: 'Enable debug logging'
+        required: false
+        type: boolean
+        default: false
+
+      # --- Optional pre-scan build ---
+      build_type:
+        description: "Pre-scan build to run: 'none', 'maven' or 'gradle'"
+        required: false
+        type: string
+        default: 'none'
+      java_version:
+        description: >-
+          Java version for the pre-scan build. Empty auto-detects from
+          the project, falling back to 21. Independent of
+          iq_java_version, which governs the Nexus IQ CLI.
+        required: false
+        type: string
+        default: ''
+      java_distribution:
+        description: 'JAVA SE distribution for the pre-scan build'
+        required: false
+        type: string
+        default: 'temurin'
+      build_permit_fail:
+        description: >-
+          Permit pre-scan build failures without failing the workflow.
+          Defaults true, unlike other *_permit_fail inputs: a partial
+          dependency tree still yields a useful scan, and blocking on
+          the build would convert a build regression into a missing
+          security signal.
+        required: false
+        type: boolean
+        default: true
+      mvn_version:
+        description: 'Maven version for the pre-scan build'
+        required: false
+        type: string
+        default: '3.9.5'
+      mvn_phases:
+        description: 'Maven lifecycle phases for the pre-scan build'
+        required: false
+        type: string
+        default: 'clean package'
+      mvn_profiles:
+        description: 'Comma-separated Maven profiles'
+        required: false
+        type: string
+        default: ''
+      mvn_params:
+        description: 'Parameters passed to the mvn command'
+        required: false
+        type: string
+        default: ''
+      mvn_opts:
+        description: 'MAVEN_OPTS for the pre-scan build'
+        required: false
+        type: string
+        default: ''
+      gradle_version:
+        description: 'Gradle version for the pre-scan build'
+        required: false
+        type: string
+        default: ''
+      build_arguments:
+        description: 'Arguments passed to the gradle command'
+        required: false
+        type: string
+        default: 'build'
+
+      # --- Maven settings.xml synthesis (optional) ---
+      # Supplying maven_server_ids turns these on. The lane then builds a
+      # settings.xml with maven-xml-settings-action rather than expecting
+      # the maven_global_settings secret.
+      maven_server_ids:
+        description: >-
+          Maven server <id> values sharing one credential, comma, space
+          or newline separated. Leave empty to skip synthesis and use
+          the maven_global_settings secret instead.
+        required: false
+        type: string
+        default: ''
+      maven_server_username:
+        description: >-
+          Username applied to every synthesised server entry. An input
+          rather than a secret, so a caller may derive it (from a
+          project name, for example) and pass it without redaction.
+        required: false
+        type: string
+        default: ''
+      maven_mirror_id:
+        description: 'Mirror <id>; requires maven_mirror_url to take effect'
+        required: false
+        type: string
+        default: ''
+      maven_mirror_url:
+        description: 'Mirror <url>; requires maven_mirror_id to take effect'
+        required: false
+        type: string
+        default: ''
+      maven_mirror_of:
+        description: 'Mirror <mirrorOf> selector'
+        required: false
+        type: string
+        default: '*'
+      maven_profile_id:
+        description: >-
+          Active profile <id>; requires maven_profile_repository_url
+        required: false
+        type: string
+        default: ''
+      maven_profile_repository_url:
+        description: >-
+          Repository URL for the active profile; requires
+          maven_profile_id
+        required: false
+        type: string
+        default: ''
+
+      # --- Job timeout ---
+      timeout_minutes:
+        description: 'Timeout (minutes) for the scan job'
+        required: false
+        type: number
+        default: 45
+
+      # --- Runner hardening ---
+      harden_runner_egress:
+        description: "Harden-runner egress policy: 'block' or 'audit'"
+        required: false
+        type: string
+        default: 'block'
+      build_permit_egress_traffic:
+        description: >-
+          Run harden-runner in audit mode, permitting unrestricted
+          egress. Use when a pre-scan build fetches dependencies from
+          CDNs that are impractical to enumerate in the allow-list.
+          Unlike the build-test workflows, where the build is a separate
+          job, this lane runs the build inside the scan job, so the
+          exemption covers the whole job.
+        required: false
+        type: boolean
+        default: false
+      harden_runner_allowlist:
+        description: 'Out-of-band harden-runner allow-list configuration'
+        required: false
+        type: string
+        # yamllint disable-line rule:line-length
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@4d8825761e149992652bccf8aa0de72d79903853'  # v0.10.0
+
+      # --- Gerrit-aware checkout (empty unless dispatched via Gerrit) ---
+      gerrit_refspec:
+        description: 'Gerrit refspec of the change under test'
+        required: false
+        type: string
+        default: ''
+      gerrit_project:
+        description: 'Gerrit project name'
+        required: false
+        type: string
+        default: ''
+      gerrit_branch:
+        description: 'Gerrit target branch'
+        required: false
+        type: string
+        default: ''
+      gerrit_url:
+        description: >-
+          Gerrit server URL. Empty falls back to the GERRIT_URL repository
+          variable at runtime.
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      nexus_iq_password:
+        description: 'Nexus IQ password'
+        required: true
+      maven_server_password:
+        description: >-
+          Password applied to every synthesised Maven server entry. Used
+          only when maven_server_ids is set.
+        required: false
+      maven_global_settings:
+        description: >-
+          A complete Maven settings.xml for the pre-scan build, as an
+          alternative to synthesising one from the maven_* inputs. It
+          carries repository credentials, so it is a secret rather than
+          an input. Store the whole document as a repository secret
+          rather than routing it through a job output, which GitHub
+          redacts when it contains registered secrets.
+        required: false
+
+permissions: {}
+
+jobs:
+  gerrit-validate:
+    name: 'Validate Workflow Inputs'
+    # Fails fast with a clear message when inputs are inconsistent. The
+    # scan job depends on this, so invalid input stops the pipeline
+    # early and cleanly. This job always runs (only the validation steps
+    # are conditional), so gating dependents on it does not trip
+    # GitHub's "skipped need skips dependents" behaviour.
+    #
+    # The job carries no harden-runner step by design: it performs pure
+    # input-string validation with no checkout, artifacts or network
+    # access, and loading the egress allow-list would itself add an
+    # outbound call.
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: 'Validate path_prefix input'
+        shell: bash
+        env:
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+        run: |
+          # Require a relative, non-traversing path: later steps cd
+          # into it and derive scan targets from it, so an empty value,
+          # absolute paths or .. segments could escape the checkout.
+          # A single trailing slash is tolerated ('./' == '.').
+          PATH_PREFIX="${PATH_PREFIX%/}"
+          if [ "${PATH_PREFIX}" = '.' ]; then
+            exit 0
+          fi
+          if [[ ! "${PATH_PREFIX}" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] \
+            || [[ "${PATH_PREFIX}" =~ (^|/)\.\.(/|$) ]]; then
+            echo "::error::Invalid path_prefix input: ${PATH_PREFIX}"
+            exit 1
+          fi
+
+      - name: 'Validate build_type input'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          # Reject typos early: an unrecognised build_type would
+          # otherwise skip the build stage silently and scan an
+          # unpopulated workspace.
+          case "${BUILD_TYPE}" in
+            none | maven | gradle) ;;
+            *)
+              echo "::error::build_type must be 'none', 'maven' or" \
+                "'gradle' (received: '${BUILD_TYPE}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate timeout_minutes input'
+        shell: bash
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          # GitHub permits 1-360 minutes; an out-of-range value fails
+          # the run with an opaque scheduling error.
+          if ! [[ "${TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] \
+            || [ "${TIMEOUT_MINUTES}" -lt 1 ] \
+            || [ "${TIMEOUT_MINUTES}" -gt 360 ]; then
+            echo "::error::timeout_minutes must be an integer 1-360" \
+              "(received: '${TIMEOUT_MINUTES}')"
+            exit 1
+          fi
+
+      - name: 'Require Gerrit project, branch and URL'
+        if: inputs.gerrit_refspec != ''
+        shell: bash
+        env:
+          GERRIT_PROJECT: ${{ inputs.gerrit_project }}
+          GERRIT_BRANCH: ${{ inputs.gerrit_branch }}
+          # yamllint disable-line rule:line-length
+          GERRIT_URL: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+        run: |
+          # gerrit_refspec is set, so the Gerrit checkout path runs and
+          # also requires gerrit_project, gerrit_branch and a resolvable
+          # Gerrit URL (the gerrit_url input or the GERRIT_URL variable).
+          missing=''
+          if [ -z "${GERRIT_PROJECT}" ]; then
+            missing="${missing} gerrit_project"
+          fi
+          if [ -z "${GERRIT_BRANCH}" ]; then
+            missing="${missing} gerrit_branch"
+          fi
+          if [ -z "${GERRIT_URL}" ]; then
+            missing="${missing} gerrit_url/GERRIT_URL"
+          fi
+          if [ -n "${missing}" ]; then
+            echo "::error::gerrit_refspec is set but missing:${missing}"
+            exit 1
+          fi
+          echo 'Gerrit inputs validated ✅'
+
+  scan:
+    name: 'Scan'
+    needs: gerrit-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      # The workflow checks out the repository under analysis.
+      contents: read
+    steps:
+      # This lane runs any pre-scan build inside the scan job, so the
+      # build_permit_egress_traffic exemption necessarily covers the
+      # whole job rather than a separate build job. Left unset, the job
+      # follows harden_runner_egress like every other job.
+      - name: 'Load egress allow-list (block mode)'
+        # yamllint disable-line rule:line-length
+        if: ${{ !inputs.build_permit_egress_traffic && inputs.harden_runner_egress != 'audit' }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
+        with:
+          config: ${{ inputs.harden_runner_allowlist }}
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        if: ${{ !inputs.build_permit_egress_traffic && inputs.harden_runner_egress != 'audit' }}
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+      - name: 'Harden runner (audit)'
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_permit_egress_traffic || inputs.harden_runner_egress == 'audit' }}
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout Gerrit change'
+        if: inputs.gerrit_refspec != ''
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/checkout-gerrit-change-action@f87b90a3370e62dad310797fedc7fd3700c75832  # v1.0.2
+        with:
+          gerrit-refspec: ${{ inputs.gerrit_refspec }}
+          gerrit-project: ${{ inputs.gerrit_project }}
+          # yamllint disable-line rule:line-length
+          gerrit-url: ${{ inputs.gerrit_url != '' && inputs.gerrit_url || vars.GERRIT_URL }}
+          delay: '0s'
+          ref: refs/heads/${{ inputs.gerrit_branch }}
+
+      - name: 'Checkout repository'
+        if: inputs.gerrit_refspec == ''
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # Detect the project's Java version so the pre-scan build uses the
+      # toolchain the project expects, rather than whatever the Nexus IQ
+      # CLI needs. Only relevant when a build runs.
+      - name: 'Gather build metadata'
+        id: metadata
+        if: inputs.build_type != 'none'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/build-metadata-action@0f81bc87b65e73729f704683f84a497eacb12f49  # v0.7.0
+        with:
+          path_prefix: ${{ inputs.path_prefix }}
+
+      # Synthesise a settings.xml when the caller supplies server ids,
+      # rather than expecting a pre-built document. This runs in the same
+      # job as the build deliberately: the alternative, synthesising in a
+      # caller job and forwarding the result, would route the document
+      # through a job output, and GitHub redacts outputs containing
+      # registered secrets, so the password would arrive as '***'.
+      - name: 'Synthesise Maven settings'
+        id: settings
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_type == 'maven' && inputs.maven_server_ids != '' }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/maven-xml-settings-action@e40c793acc0f688303943189858c0645ba906881  # v0.1.0
+        with:
+          server-ids: ${{ inputs.maven_server_ids }}
+          username: ${{ inputs.maven_server_username }}
+          password: ${{ secrets.maven_server_password }}
+          mirror-id: ${{ inputs.maven_mirror_id }}
+          mirror-url: ${{ inputs.maven_mirror_url }}
+          mirror-of: ${{ inputs.maven_mirror_of }}
+          profile-id: ${{ inputs.maven_profile_id }}
+          profile-repository-url: ${{ inputs.maven_profile_repository_url }}
+
+      # Populate the workspace with resolved dependencies before
+      # scanning. An explicit java_version wins, then project detection,
+      # then 21 as the floor.
+      - name: 'Build with Maven'
+        if: inputs.build_type == 'maven'
+        # yamllint disable-line rule:line-length
+        continue-on-error: ${{ inputs.build_permit_fail }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/maven-build-action@79f0851d13bde7aed47a967bfd72682101756f7f  # v0.3.0
+        with:
+          path_prefix: ${{ inputs.path_prefix }}
+          # yamllint disable-line rule:line-length
+          java-version: ${{ inputs.java_version != '' && inputs.java_version || steps.metadata.outputs.java_version || '21' }}
+          distribution: ${{ inputs.java_distribution }}
+          mvn-version: ${{ inputs.mvn_version }}
+          mvn-phases: ${{ inputs.mvn_phases }}
+          mvn-profiles: ${{ inputs.mvn_profiles }}
+          mvn-params: ${{ inputs.mvn_params }}
+          mvn-opts: ${{ inputs.mvn_opts }}
+          # A synthesised document wins; otherwise fall back to a
+          # complete settings.xml supplied as a secret.
+          # yamllint disable-line rule:line-length
+          global-settings: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
+          run-jacoco: 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Build with Gradle'
+        if: inputs.build_type == 'gradle'
+        # yamllint disable-line rule:line-length
+        continue-on-error: ${{ inputs.build_permit_fail }}
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/gradle-build-action@fec7e8a18d3edde71e21012c56fcd5721a0e3128  # v0.5.0
+        with:
+          # gradle-build-action names this 'path', not 'path_prefix'
+          path: ${{ inputs.path_prefix }}
+          # yamllint disable-line rule:line-length
+          java-version: ${{ inputs.java_version != '' && inputs.java_version || steps.metadata.outputs.java_version || '21' }}
+          distribution: ${{ inputs.java_distribution }}
+          gradle-version: ${{ inputs.gradle_version }}
+          build-arguments: ${{ inputs.build_arguments }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive the Nexus IQ application id from the repository actually
+      # under scan. The scan action defaults it from the calling
+      # repository, which is wrong whenever `repository` points
+      # elsewhere, so resolve it here rather than relying on that.
+      - name: 'Resolve Nexus IQ application id'
+        id: application
+        shell: bash
+        env:
+          APPLICATION_ID: ${{ inputs.application_id }}
+          TARGET_REPOSITORY: ${{ inputs.repository || github.repository }}
+        run: |
+          # An explicit application_id always wins; otherwise derive
+          # <owner>-<name> from the repository under scan.
+          app_id="${APPLICATION_ID}"
+          if [ -z "${app_id}" ]; then
+            app_id="${TARGET_REPOSITORY//\//-}"
+          fi
+          echo "id=${app_id}" >> "$GITHUB_OUTPUT"
+          echo "Nexus IQ application id: ${app_id}"
+
+      # no_checkout is 'true' because this workflow has already checked
+      # out, via whichever of the two paths above applied.
+      - name: 'Sonatype Lifecycle scan'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/sonatype-lifecycle-scan-action@f5b35cbd1c76597611c426e7e788c147e11c8e98  # v0.2.0
+        with:
+          nexus_iq_server: ${{ vars.NEXUS_IQ_SERVER }}
+          nexus_iq_username: ${{ vars.NEXUS_IQ_USERNAME }}
+          nexus_iq_password: ${{ secrets.nexus_iq_password }}
+          java_distribution: ${{ inputs.iq_java_distribution }}
+          java_version: ${{ inputs.iq_java_version }}
+          iq_cli_version: ${{ inputs.iq_cli_version }}
+          application_id: ${{ steps.application.outputs.id }}
+          scan_targets: ${{ inputs.scan_targets }}
+          advanced_properties: ${{ inputs.advanced_properties }}
+          ignore_scanning_errors: ${{ inputs.ignore_scanning_errors }}
+          ignore_system_errors: ${{ inputs.ignore_system_errors }}
+          fail_on_policy_warnings: ${{ inputs.fail_on_policy_warnings }}
+          debug: ${{ inputs.debug }}
+          no_checkout: 'true'

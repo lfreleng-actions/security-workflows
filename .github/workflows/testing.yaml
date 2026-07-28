@@ -1,0 +1,98 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Exercises the security lanes in this repository against fixture
+# repositories. Lanes are referenced by LOCAL path, so this always
+# validates the current branch.
+#
+# The self-test runs on workflow_dispatch ONLY. The lanes need
+# organisation credentials (NEXUS_IQ_SERVER, NEXUS_IQ_USERNAME and the
+# NEXUS_IQ_PASSWORD and SONAR_TOKEN secrets) which are unavailable to
+# pull requests raised from forks, so a pull_request trigger would fail
+# for outside contributors rather than reporting anything useful.
+# Trigger it manually to validate a candidate branch.
+name: 'Testing 🧪'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  # Scan a Maven fixture with a pre-scan build, which exercises the
+  # build stage, the independent build/CLI JDK resolution and the scan
+  # itself. Audit egress because a real Maven build reaches artifact
+  # CDNs beyond the allow-listed toolchain set.
+  sonatype-lifecycle-maven:
+    name: 'Sonatype Lifecycle (Maven)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-maven-project'
+      build_type: 'maven'
+      mvn_params: '-DskipTests'
+      harden_runner_egress: 'audit'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  # Scan without a build, which is the path most non-JVM projects take.
+  sonatype-lifecycle-scan-only:
+    name: 'Sonatype Lifecycle (scan only)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-node-project'
+      build_type: 'none'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  # Exercise the SonarQube Cloud lane's build stage, which is where the
+  # lane does its own work; the scan itself is the action's concern.
+  # Audit egress because a real Maven build reaches artifact CDNs beyond
+  # the allow-listed toolchain set.
+  sonarqube-cloud-maven:
+    name: 'SonarQube Cloud (Maven)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonarqube-cloud.yaml
+    with:
+      repository: 'lfreleng-actions/test-maven-project'
+      build_type: 'maven'
+      build_permit_egress_traffic: true
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  # Cover the non-JVM build path: a different action, a different
+  # coverage artefact, and the same continue-on-error plumbing.
+  sonarqube-cloud-go:
+    name: 'SonarQube Cloud (Go)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonarqube-cloud.yaml
+    with:
+      repository: 'lfreleng-actions/test-go-project'
+      build_type: 'go'
+      build_permit_egress_traffic: true
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  # Scan with no build stage at all, which is the path generic and
+  # JavaScript projects take.
+  sonarqube-cloud-scan-only:
+    name: 'SonarQube Cloud (scan only)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonarqube-cloud.yaml
+    with:
+      repository: 'lfreleng-actions/test-node-project'
+      build_type: 'none'
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}

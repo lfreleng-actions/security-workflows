@@ -193,6 +193,90 @@ action across the six lanes. Accepted: the author is a team member. The
 repository may relocate, so the pin should be reviewed if the coordinate
 changes.
 
+### D11 — Split pre-scan work between `build_type` and the scan action
+
+The seven `composed-*-sonar-cloud` variants fall into two groups, and
+only one of them needs a lane-level build stage.
+
+`build_type` covers `maven`, `gradle`, `tox` and `go`. Each runs beside
+the scanner and leaves something behind that the analyser reads: compiled
+bytecode for the Java analyser, a JaCoCo report, a `coverage.xml`, a
+`coverage.out`.
+
+C and C++ take the other path. Their analyser needs a compilation
+database captured by SonarSource's build-wrapper, which *wraps* the build
+rather than running beside it, so it belongs to the scan action's
+`build_wrapper_url`. The `autotools` and `cmake` variants both piped a
+script from `releng-global-jjb`'s mutable `master` branch into `bash`;
+`build_wrapper_url` replaces that with an input the caller pins. Anything
+else uses `prescan_script_url`, and `generic` becomes `build_type: none`.
+
+The three are mutually exclusive, and the lane says so in `validate`
+rather than letting a project build twice.
+
+| Source variant | Replacement |
+| -------------- | ----------- |
+| `composed-maven-sonar-cloud.yaml` | `build_type: maven` |
+| `composed-tox-sonar-cloud.yaml` | `build_type: tox` |
+| `composed-go-sonar-cloud.yaml` | `build_type: go` |
+| `composed-autotools-sonar-cloud.yaml` | `build_wrapper_url` |
+| `composed-cmake-sonar-cloud.yaml` | `build_wrapper_url` |
+| `composed-prescan-sonar-cloud.yaml` | `prescan_script_url` |
+| `composed-generic-sonar-cloud.yaml` | `build_type: none` |
+
+There was no Gradle SonarCloud variant. The lane adds `build_type:
+gradle` regardless, because the Java analyser's need for bytecode does
+not depend on which build tool produced it, and the CLM lane already
+carries the same pair.
+
+### D12 — Sonar fails on build error; CLM does not
+
+`build_permit_fail` defaults to `false` in `sonarqube-cloud.yaml` and
+`true` in `sonatype-lifecycle.yaml`. The divergence is deliberate.
+
+A partially built workspace still yields a useful CLM result: Nexus IQ
+evaluates whatever dependencies resolved. Sonar behaves differently. A
+failed build leaves no bytecode and no coverage report, so the scan
+succeeds and reports a project with near-zero coverage and no
+bytecode-derived findings. That is worse than a failure, because the
+dashboard looks healthy. The Sonar default therefore matches the sibling
+repositories; the CLM lane is the exception.
+
+### Legacy defects not carried forward
+
+The audit of the source SonarCloud workflows found the following. None
+reproduce in the lane, and each is worth knowing when comparing a
+migrated project's results against its history.
+
+- **The token never reached the scanner in four of seven variants.**
+  `autotools`, `cmake` and `generic` passed `SONAR_TOKEN` as step-level
+  `env` on the `uses:` step. The action sets `SONAR_TOKEN` from its own
+  `sonar_token` input at step level, which takes precedence, so the
+  inherited value was overwritten with an empty string. `tox` passed
+  `SONAR_TOKEN` as a `with:` key the action does not declare.
+- **`SONAR_ARGS` and `SONAR_PROJECTBASEDIR` were declared but unused** in
+  `autotools`, `cmake`, `generic` and `prescan`. Callers setting them saw
+  no effect.
+- **`no_checkout` was unset in four variants** that had already checked
+  out and built. The action's own checkout then ran over the workspace,
+  discarding the build output the scan depended on.
+- **`composed-tox` never delivered coverage to the scanner.** The tox run
+  and the scan were separate jobs with no artefact transfer, so the
+  report existed on a runner the scanner never saw.
+- **`composed-maven` passed the token on the Maven command line** as
+  `-Dsonar.login=<token>`, visible in process listings and frequently in
+  build logs. It also used the deprecated `sonar.login` property.
+- **Template injection** in `autotools`, `cmake`, `prescan` and
+  `generic`: `PRE_BUILD_SCRIPT` and `PRE_BUILD_SCRIPT_PATH` interpolated
+  straight into `run:` blocks and into `$GITHUB_ENV`. The `go` variant
+  had already been fixed and is the shape the lane follows.
+- **`generic` splatted secrets into the environment** via a third-party
+  action, and guarded its pre-build step with
+  `hashFiles(inputs.PRE_BUILD_SCRIPT)` while executing the same input as
+  a command.
+- No `timeout-minutes` anywhere, Python 3.8 hardcoded, and a mix of
+  `ubuntu-latest` and `ubuntu-24.04`.
+
 ## Shared input vocabulary
 
 Common to every lane, matching the sibling repositories:

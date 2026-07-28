@@ -1,0 +1,57 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the SonarQube Cloud lane
+# =============================================================================
+# Use this form for projects where GitHub is the source of truth.
+#
+# DEPLOYMENT NOTES:
+#   * Set the secret SONAR_TOKEN.
+#   * Put sonar.organization and sonar.projectKey in a
+#     sonar-project.properties file at the project root, or pass them as
+#     the sonar_organization and sonar_project_key inputs.
+#   * Analysis reflects whatever is on disk when the scanner runs. For
+#     Java, Python and Go projects, set build_type so compiled output and
+#     a coverage report exist first; see the commented block below.
+# =============================================================================
+name: 'Security Scans (SonarQube Cloud)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  push:
+    branches: ['main', 'master']
+  schedule:
+    # Odd minute so GitHub's queue randomises the exact start time
+    - cron: '43 1 * * 6'
+
+permissions: {}
+
+jobs:
+  sonarqube-cloud:
+    name: 'SonarQube Cloud'
+    permissions:
+      contents: read
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/sonarqube-cloud.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    # Optional inputs, shown with their defaults:
+    #  with:
+    #   build_type: 'none'        # 'maven', 'gradle', 'tox' or 'go'
+    #   path_prefix: '.'          # project root and Sonar projectBaseDir
+    #   sonar_organization: ''    # empty defers to sonar-project.properties
+    #   sonar_project_key: ''     # empty defers to sonar-project.properties
+    #   fetch_depth: 0            # full history; Sonar needs it for new-code
+    #   wait_for_quality_gate: false
+    #   fail_on_quality_gate: false   # requires wait_for_quality_gate
+    #   harden_runner_egress: 'block'
+    #
+    # A Java project needs compiled bytecode and a JaCoCo report, so:
+    #  with:
+    #   build_type: 'maven'
+    #   build_permit_egress_traffic: true   # artifact CDNs vary per project
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
