@@ -146,3 +146,22 @@ jobs:
       publish_results: false
       upload_sarif: false
       summary_enabled: false
+
+  # Exercise the CodeQL lane's matrix construction, which is the part
+  # this repository owns; the analysis itself belongs to the action.
+  # Two languages confirm the matrix fans out and that artifact names
+  # stay unique across jobs.
+  #
+  # upload is 'never' so a self-test does not file alerts against this
+  # repository, and upload_database is off for the same reason.
+  codeql-matrix:
+    name: 'CodeQL (matrix)'
+    permissions:
+      contents: read
+      packages: read  # fetch internal or private CodeQL packs
+    uses: ./.github/workflows/codeql.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-project'
+      languages: 'python,actions'
+      upload: 'never'
+      upload_database: false

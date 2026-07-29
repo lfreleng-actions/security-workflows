@@ -36,13 +36,13 @@ and picks up the security lanes from
 | `zizmor.yaml` | GitHub Actions workflow audit, SARIF publishing | **Available** |
 | `openssf-scorecard.yaml` | OpenSSF Scorecard supply-chain health | **Available** |
 | `package-hardening-audit.yaml` | Package manager hardening audit | **Available** |
-| `codeql.yaml` | CodeQL static analysis | Planned |
+| `codeql.yaml` | CodeQL static analysis, matrix over languages | **Available** |
 
 <!-- markdownlint-enable MD013 -->
 
-Until a lane lands, continue using its counterpart in
-`lfit/releng-reusable-workflows`. A migration map ships with the
-first release.
+All six lanes are now available, and they supersede
+`lfit/releng-reusable-workflows`. A migration map ships with the first
+release.
 
 ## Design
 
