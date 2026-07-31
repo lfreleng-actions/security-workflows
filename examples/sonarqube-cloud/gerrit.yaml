@@ -166,6 +166,12 @@ jobs:
       # Build the project so the Java analyser sees bytecode and a JaCoCo
       # coverage report. Leave java_version empty to auto-detect the
       # project's JDK.
+      #
+      # analysis_mode is left unset, so the lane derives it from
+      # build_type and a Maven project is analysed with
+      # sonar-maven-plugin. That matters: the Scanner CLI would also walk
+      # target/generated-sources and report findings against generated
+      # code. Set analysis_mode explicitly only to override.
       build_type: 'maven'
       mvn_params: '--fail-at-end'
       # Dependency fetches from artifact CDNs are impractical to enumerate

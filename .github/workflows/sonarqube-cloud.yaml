@@ -96,6 +96,52 @@ on:
         required: false
         type: string
         default: ''
+
+      # --- Analysis backend ---
+      # Empty derives the backend from build_type rather than defaulting
+      # to the Scanner CLI, because the two are not interchangeable on a
+      # Maven project and the wrong one fails silently. The Scanner CLI
+      # walks the workspace, so after a build it also reads
+      # target/generated-sources -- generated OpenAPI, MapStruct and
+      # similar -- and reports findings against code nobody wrote.
+      # sonar-maven-plugin instead derives module structure, compiled
+      # binaries, coverage report paths and exclusions from the Maven
+      # project model.
+      #
+      # This surfaced on ONAP cps/ncmp-dmi-plugin, where a CLI analysis
+      # moved the project's own branch from 0 bugs to 1157 without a
+      # line of code changing, and the run still reported success. A
+      # caller had no way to correct it: the input existed on the action
+      # but this workflow never passed it.
+      #
+      # Deriving is safe because a Maven backend needs a built reactor,
+      # and build_type == 'maven' is precisely when this lane has built
+      # one. Set the value explicitly to override.
+      analysis_mode:
+        description: >-
+          Analysis backend: 'cli' (Sonar Scanner CLI), 'maven'
+          (sonar-maven-plugin), or empty to derive from build_type.
+        required: false
+        type: string
+        default: ''
+      maven_sonar_plugin_version:
+        description: >-
+          Version of org.sonarsource.scanner.maven:sonar-maven-plugin
+          used in Maven mode.
+        required: false
+        type: string
+        # Mirrors the action's own pinned default. Passed through
+        # unconditionally, and the action rejects an empty value, so the
+        # value has to be carried here rather than left blank for the
+        # action to supply. Keep the two in step when the action moves.
+        default: '5.7.0.6970'
+      maven_args:
+        description: >-
+          Extra arguments appended to the Maven sonar invocation in
+          Maven mode, for example '--settings /path/settings.xml'.
+        required: false
+        type: string
+        default: ''
       sonar_branch_name:
         description: >-
           Analysis branch name (sonar.branch.name). Useful under
@@ -477,6 +523,42 @@ jobs:
               ;;
           esac
 
+      - name: 'Validate analysis_mode input'
+        shell: bash
+        env:
+          ANALYSIS_MODE: ${{ inputs.analysis_mode }}
+        run: |
+          # An unrecognised value reaches the scan action, which treats
+          # anything that is not 'maven' as the Scanner CLI. A typo such
+          # as 'mvn' would therefore run the wrong backend and still
+          # report success, which is the failure this input exists to
+          # prevent. Empty is legitimate and means derive from
+          # build_type.
+          case "${ANALYSIS_MODE}" in
+            '' | cli | maven) ;;
+            *)
+              echo "::error::analysis_mode must be 'cli', 'maven' or" \
+                "empty to derive from build_type (received:" \
+                "'${ANALYSIS_MODE}')"
+              exit 1
+              ;;
+          esac
+
+      - name: 'Validate maven_sonar_plugin_version input'
+        shell: bash
+        env:
+          PLUGIN_VERSION: ${{ inputs.maven_sonar_plugin_version }}
+        run: |
+          # The value is forwarded unconditionally and the scan action
+          # rejects an empty one, so a caller clearing this input fails
+          # inside the action with no reference to the input that caused
+          # it. Catch it here, where the message can name the input.
+          if [ -z "${PLUGIN_VERSION}" ]; then
+            echo "::error::maven_sonar_plugin_version must not be" \
+              "empty; omit the input to take the default"
+            exit 1
+          fi
+
       - name: 'Validate fetch_depth input'
         shell: bash
         env:
@@ -764,6 +846,11 @@ jobs:
       # out the code, and any pre-scan build has populated the
       # workspace. Letting the action check out again would discard the
       # compiled output and coverage reports the scan depends on.
+      #
+      # analysis_mode falls back to the build system when the caller
+      # leaves it empty: a Maven build gets sonar-maven-plugin, anything
+      # else gets the Scanner CLI. See the input's own comment for why
+      # the two are not interchangeable.
       - name: 'SonarQube Cloud scan'
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/sonarqube-cloud-scan-action@0f7a9fa8e3e77663a007d6f6f19752c8dacf7def  # v1.4.0
@@ -784,6 +871,11 @@ jobs:
           build_wrapper_out_dir: ${{ inputs.build_wrapper_out_dir }}
           prescan_script_url: ${{ inputs.prescan_script_url }}
           lc_all: ${{ inputs.lc_all }}
+          # yamllint disable-line rule:line-length
+          analysis_mode: ${{ inputs.analysis_mode != '' && inputs.analysis_mode || (inputs.build_type == 'maven' && 'maven' || 'cli') }}
+          # yamllint disable-line rule:line-length
+          maven_sonar_plugin_version: ${{ inputs.maven_sonar_plugin_version }}
+          maven_args: ${{ inputs.maven_args }}
           wait_for_quality_gate: ${{ inputs.wait_for_quality_gate }}
           fail_on_quality_gate: ${{ inputs.fail_on_quality_gate }}
           debug: ${{ inputs.debug }}

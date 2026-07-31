@@ -239,6 +239,32 @@ gradle` regardless, because the Java analyser's need for bytecode does
 not depend on which build tool produced it, and the CLM lane already
 carries the same pair.
 
+### Analysis backend
+
+`analysis_mode` selects between the Sonar Scanner CLI and
+`sonar-maven-plugin`. Left empty it is **derived from `build_type`**: a
+Maven build is analysed with the Maven plugin, everything else with the
+CLI.
+
+The two are not interchangeable on a Maven project, and the wrong one
+fails quietly. The CLI walks the workspace, so after a build it also
+reads `target/generated-sources` — generated OpenAPI, MapStruct and the
+like — and reports findings against code nobody wrote. The Maven plugin
+instead derives module structure, compiled binaries, coverage report
+paths and exclusions from the project model.
+
+Deriving rather than defaulting to `cli` is deliberate. ONAP
+`cps/ncmp-dmi-plugin` had a CLI analysis move its branch from 0 bugs to
+1157 without a line of code changing, and the run still reported
+success. Nothing in the caller could correct it, because the action
+exposed the input and this workflow did not pass it. A default that is
+wrong for the commonest Java case, on a lane whose failure mode is a
+plausible-looking number rather than an error, is not a safe default.
+
+The derivation is sound because Maven mode needs an already-built
+reactor, and `build_type: maven` is exactly when this lane has built
+one.
+
 ### D12 — Sonar fails on build error; CLM does not
 
 `build_permit_fail` defaults to `false` in `sonarqube-cloud.yaml` and
