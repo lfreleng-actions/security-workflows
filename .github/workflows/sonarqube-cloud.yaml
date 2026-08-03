@@ -847,6 +847,68 @@ jobs:
       # workspace. Letting the action check out again would discard the
       # compiled output and coverage reports the scan depends on.
       #
+      # Materialise the same Maven settings the pre-scan build used, for
+      # the scan to reuse.
+      #
+      # sonar-maven-plugin resolves dependencies itself, so it needs the
+      # repository configuration as much as the build does. Passing the
+      # document to the build alone leaves the scan on Maven's defaults,
+      # with no mirror and no internal repositories, and it fails on the
+      # first artefact that lives there:
+      #
+      #   Non-resolvable import POM:
+      #   org.onap.cps:cps-dependencies:pom:3.7.9
+      #
+      # ONAP cps/ncmp-dmi-plugin hit exactly that, having built cleanly a
+      # moment earlier. Its sibling cps did not, because it builds the
+      # same artefact in-reactor rather than importing it -- so whether
+      # the defect shows depends on the project, not the configuration.
+      #
+      # Written under RUNNER_TEMP rather than the workspace: the document
+      # can carry repository credentials, and the workspace is what gets
+      # archived and scanned.
+      #
+      # Created with mktemp rather than at a fixed name. The Maven build
+      # runs earlier in this job and executes repository-controlled code
+      # -- plugins, tests -- as this user, with write access to
+      # RUNNER_TEMP. A predictable path could therefore be pre-created as
+      # a symlink, and a plain redirect follows one, depositing the
+      # credentials wherever it points. That matters here more than in
+      # most lanes, because the code being analysed is an untrusted
+      # patchset. mktemp creates a fresh unpredictable file and does so
+      # at 0600 whatever the umask.
+      - name: 'Provide Maven settings to the scan'
+        id: scan-settings
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_type == 'maven' && (inputs.analysis_mode == '' || inputs.analysis_mode == 'maven') }}
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          SETTINGS_CONTENT: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
+        run: |
+          # Write the settings document and emit the Maven argument.
+          set -euo pipefail
+
+          if [ -z "${SETTINGS_CONTENT}" ]; then
+            echo 'args=' >> "$GITHUB_OUTPUT"
+            echo 'No Maven settings supplied; the scan uses defaults'
+            exit 0
+          fi
+
+          settings_file="$(
+            mktemp "${RUNNER_TEMP}/sonar-maven-settings.XXXXXXXXXX"
+          )"
+          # Never echoed: the document may carry repository credentials.
+          printf '%s' "${SETTINGS_CONTENT}" > "${settings_file}"
+
+          echo "args=--global-settings ${settings_file}" >> "$GITHUB_OUTPUT"
+          echo "Maven settings provided to the scan: ${settings_file}"
+
+      # no_checkout is 'true' because this workflow has already checked
+      # out the code, and any pre-scan build has populated the
+      # workspace. Letting the action check out again would discard the
+      # compiled output and coverage reports the scan depends on.
+      #
       # analysis_mode falls back to the build system when the caller
       # leaves it empty: a Maven build gets sonar-maven-plugin, anything
       # else gets the Scanner CLI. See the input's own comment for why
@@ -875,7 +937,14 @@ jobs:
           analysis_mode: ${{ inputs.analysis_mode != '' && inputs.analysis_mode || (inputs.build_type == 'maven' && 'maven' || 'cli') }}
           # yamllint disable-line rule:line-length
           maven_sonar_plugin_version: ${{ inputs.maven_sonar_plugin_version }}
-          maven_args: ${{ inputs.maven_args }}
+          # The caller's arguments come first deliberately. Maven honours
+          # the FIRST --global-settings it is given and ignores any
+          # later duplicate (verified against Maven 3.9.14), so leading
+          # with the caller's value lets it override the document
+          # supplied above; ours then applies only when the caller
+          # offered none.
+          # yamllint disable-line rule:line-length
+          maven_args: ${{ inputs.maven_args }} ${{ steps.scan-settings.outputs.args }}
           wait_for_quality_gate: ${{ inputs.wait_for_quality_gate }}
           fail_on_quality_gate: ${{ inputs.fail_on_quality_gate }}
           debug: ${{ inputs.debug }}
