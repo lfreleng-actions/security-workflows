@@ -165,3 +165,29 @@ jobs:
       languages: 'python,actions'
       upload: 'never'
       upload_database: false
+
+  # Audit this repository's own action pins. full_scan is explicit
+  # rather than relying on a workflow_dispatch having no changed-file
+  # set to narrow to, so the self-test stays a whole-repository check
+  # regardless of how the action treats non-pull_request events. The
+  # target must be clean: this repository pins every `uses:` by commit
+  # SHA, so a finding here means the lane regressed rather than the
+  # target did.
+  action-pin-audit-self:
+    name: 'Action Pin Audit (self)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/action-pin-audit.yaml
+    with:
+      full_scan: true
+
+  # Exercise the cross-repository checkout path against a fixture, which
+  # is the only part of the lane the self-scan above leaves uncovered.
+  action-pin-audit-fixture:
+    name: 'Action Pin Audit (fixture)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/action-pin-audit.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-project'
+      full_scan: true
