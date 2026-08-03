@@ -152,6 +152,23 @@ on:
         required: false
         type: boolean
         default: true
+        # The build steps below spell this as
+        # 'continue-on-error: ${{ inputs.build_permit_fail != false }}'
+        # rather than referencing the input bare. GitHub evaluates
+        # continue-on-error lazily, only once a step has actually
+        # failed, and in that evaluation the input can arrive empty --
+        # which continue-on-error rejects outright:
+        #
+        #   The template is not valid ... Unexpected value ''
+        #
+        # The comparison always yields a boolean literal, so the step
+        # cannot collapse the run at the moment a build fails, which is
+        # precisely when this lane is meant to carry on and scan.
+        #
+        # Note the SonarQube lane writes '== true' instead. That is not
+        # an inconsistency: this input defaults true and that one
+        # defaults false, and each form preserves its own default when
+        # the value arrives empty.
       mvn_version:
         description: 'Maven version for the pre-scan build'
         required: false
@@ -506,7 +523,7 @@ jobs:
       - name: 'Build with Maven'
         if: inputs.build_type == 'maven'
         # yamllint disable-line rule:line-length
-        continue-on-error: ${{ inputs.build_permit_fail }}
+        continue-on-error: ${{ inputs.build_permit_fail != false }}
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/maven-build-action@79f0851d13bde7aed47a967bfd72682101756f7f  # v0.3.0
         with:
@@ -530,7 +547,7 @@ jobs:
       - name: 'Build with Gradle'
         if: inputs.build_type == 'gradle'
         # yamllint disable-line rule:line-length
-        continue-on-error: ${{ inputs.build_permit_fail }}
+        continue-on-error: ${{ inputs.build_permit_fail != false }}
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/gradle-build-action@fec7e8a18d3edde71e21012c56fcd5721a0e3128  # v0.5.0
         with:
