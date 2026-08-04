@@ -392,26 +392,24 @@ jobs:
       # security-events scope.
       contents: read
     steps:
-      - name: 'Load egress allow-list (block mode)'
-        if: inputs.harden_runner_egress != 'audit'
+      # One harden-runner step with the policy computed, rather than
+      # two selected by condition: harden-runner declares a 'pre' entry
+      # point and no 'pre-if', so its pre-phase runs whatever a
+      # step-level 'if:' says. Both engaged, the first won, and audit
+      # mode was unreachable however the caller asked for it.
+      - name: 'Load egress allow-list'
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           config: ${{ inputs.harden_runner_allowlist }}
-      - name: 'Harden runner (block)'
-        if: inputs.harden_runner_egress != 'audit'
+      - name: 'Harden runner'
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: 'block'
+          # yamllint disable-line rule:line-length
+          egress-policy: ${{ (inputs.harden_runner_egress == 'audit') && 'audit' || 'block' }}
           allowed-endpoints: >
             ${{ env.CONNECTION_ALLOW_LIST }}
-      - name: 'Harden runner (audit)'
-        if: inputs.harden_runner_egress == 'audit'
-        # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: 'audit'
 
       - name: 'Checkout Gerrit change'
         if: inputs.gerrit_refspec != ''
@@ -479,26 +477,24 @@ jobs:
       security-events: write  # publish SARIF to code scanning
       actions: read  # upload-sarif reads run info on private repos
     steps:
-      - name: 'Load egress allow-list (block mode)'
-        if: inputs.harden_runner_egress != 'audit'
+      # One harden-runner step with the policy computed, rather than
+      # two selected by condition: harden-runner declares a 'pre' entry
+      # point and no 'pre-if', so its pre-phase runs whatever a
+      # step-level 'if:' says. Both engaged, the first won, and audit
+      # mode was unreachable however the caller asked for it.
+      - name: 'Load egress allow-list'
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/harden-runner-block-action@6db537b3e6d060c3287c5a3ce2c28b55b0af330d  # v0.2.1
         with:
           config: ${{ inputs.harden_runner_allowlist }}
-      - name: 'Harden runner (block)'
-        if: inputs.harden_runner_egress != 'audit'
+      - name: 'Harden runner'
         # yamllint disable-line rule:line-length
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: 'block'
+          # yamllint disable-line rule:line-length
+          egress-policy: ${{ (inputs.harden_runner_egress == 'audit') && 'audit' || 'block' }}
           allowed-endpoints: >
             ${{ env.CONNECTION_ALLOW_LIST }}
-      - name: 'Harden runner (audit)'
-        if: inputs.harden_runner_egress == 'audit'
-        # yamllint disable-line rule:line-length
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: 'audit'
 
       - name: 'Download SARIF artifact'
         # yamllint disable-line rule:line-length
