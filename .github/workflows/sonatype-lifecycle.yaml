@@ -486,7 +486,7 @@ jobs:
         id: metadata
         if: inputs.build_type != 'none'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/build-metadata-action@0f81bc87b65e73729f704683f84a497eacb12f49  # v0.7.0
+        uses: lfreleng-actions/build-metadata-action@6c432669e6dec2949442da27d0aa270f2bca0ecb  # v0.7.1
         with:
           path_prefix: ${{ inputs.path_prefix }}
 
