@@ -89,12 +89,13 @@ Migrating from `lfit/releng-reusable-workflows`:
 | `reuse-openssf-scorecard.yaml` | `openssf-scorecard.yaml` | None, by design |
 | `reuse-package-hardening-audit.yaml` | `package-hardening-audit.yaml` | Full |
 | `reuse-python-codeql.yaml` | `codeql.yaml` | Partial |
+| `reuse-verify-github-actions.yaml` | `action-pin-audit.yaml` | Full |
 
 Nine `composed-*` wrappers in the source repository (seven SonarCloud
 variants, two Nexus IQ) are **not** ported as files. Each bundled a
 build with a scan, and each was a source of intra-repository
 cross-references. Their behaviour folds into a `build_type` input on the
-relevant lane. Net: fifteen files become six lanes.
+relevant lane. Net: sixteen files become seven lanes.
 
 The lane and this repository's own Scorecard self-scan wanted the same
 filename, and could not merge into one file: the self-scan is a
@@ -389,6 +390,68 @@ which scans merged code on a real ref.
 This is what D8 means by "partial" Gerrit support for this lane: the
 scan runs, but the results reach Gerrit as a vote rather than as inline
 findings.
+
+### D18 — `reuse-verify-github-actions` becomes `action-pin-audit`
+
+The source name described the mechanism ("verify GitHub Actions") rather
+than the control, and was generic enough to read as any workflow check.
+What the lane actually asserts is narrow: every `uses:` coordinate in the
+repository resolves, and each names a commit SHA rather than a tag or a
+branch. `action-pin-audit.yaml` says that, and matches the `*-audit`
+precedent set by `package-hardening-audit.yaml`.
+
+The import is otherwise faithful. The source workflow is a wrapper around
+`pinned-versions-action`, itself a wrapper around the `gha-workflow-linter`
+tool, and the lane keeps that structure: no logic moves into the workflow.
+Only the harden-runner allow-list coordinate changed, from `ca8ce369`
+(86 endpoints) to the current `bf6642f6` (195). The `pinned-versions-action`
+and harden-runner pins were already current.
+
+Three things the source workflow lacked are added, all house vocabulary
+rather than new behaviour:
+
+- **Inputs.** The source declared `workflow_call:` with none at all, and
+  hardcoded `ubuntu-24.04`. It was the only lane a caller could not
+  configure.
+- **Gerrit support.** Full, per D8: the linter reads files from the
+  checkout and reports through the job's exit status, so nothing prevents
+  it scanning a patchset. Requiring the lane to own the checkout is what
+  makes that possible, so the lane passes `no_checkout: 'true'` to the
+  action, as the CLM and Sonar lanes do.
+- **`full_scan` and `linter_version`,** which the action already exposed
+  and the source workflow did not forward.
+
+Owning the checkout has one consequence worth stating. The action checks
+out `github.event.pull_request.head.sha` on pull requests, whereas a plain
+`actions/checkout` takes the merge ref. The lane reproduces the head-SHA
+behaviour when `ref` is empty. Auditing the merge ref would surface pins
+from the base branch that the change never touched, and on a repository
+mid-cleanup that turns every pull request red.
+
+That default is qualified to same-repository audits. A caller that sets
+`repository` is auditing somewhere else, where the calling pull request's
+head SHA does not exist; the lane leaves `ref` empty there so
+`actions/checkout` takes the target's default branch.
+
+### D19 — The pin audit gates; it has no `*_permit_fail`
+
+`package-hardening-audit` defaults `audit_permit_fail: true` so a project
+can adopt it as a required check before reaching zero findings. This lane
+deliberately offers no equivalent, and the four migrating callers all
+gated already.
+
+The reasoning differs from D14, where the zizmor lane cannot gate because
+the action exposes no findings count. Here the linter's exit status is the
+entire signal: suppress it and the lane produces nothing a caller can act
+on, because there is no summary table or SARIF to read instead. A pin
+audit that passes while findings exist is indistinguishable from one that
+found nothing.
+
+The adoption problem D19 would have solved is better handled before the
+lane is deployed: running `gha-workflow-linter lint --auto-fix` locally
+pins the offenders in one pass. Scope the pull-request trigger with a
+`paths` filter, as both examples do, so unrelated changes are not gated
+on it.
 
 ### Legacy defects not carried forward
 

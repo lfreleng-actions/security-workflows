@@ -37,10 +37,11 @@ and picks up the security lanes from
 | `openssf-scorecard.yaml` | OpenSSF Scorecard supply-chain health | **Available** |
 | `package-hardening-audit.yaml` | Package manager hardening audit | **Available** |
 | `codeql.yaml` | CodeQL static analysis, matrix over languages | **Available** |
+| `action-pin-audit.yaml` | GitHub Actions `uses:` pin and reference audit | **Available** |
 
 <!-- markdownlint-enable MD013 -->
 
-All six lanes are now available, and they supersede
+All seven lanes are now available, and they supersede
 `lfit/releng-reusable-workflows`. A migration map ships with the first
 release.
 

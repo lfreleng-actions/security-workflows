@@ -1,0 +1,55 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# =============================================================================
+# EXAMPLE: GitHub-native caller for the action pin audit lane
+# =============================================================================
+# Use this form for projects where GitHub is the source of truth.
+#
+# DEPLOYMENT NOTES:
+#   * Needs no secrets. The linter resolves `uses:` coordinates against
+#     the public GitHub API using the job token.
+#   * The pull_request path scans only the workflow files the change
+#     touched, so the `paths` filter below keeps the check off changes
+#     that cannot affect it. Set full_scan: true to audit everything on
+#     every run instead.
+#   * The lane GATES: an unpinned or unresolvable `uses:` fails the job.
+#     Adopting it on a repository that has never been audited may need a
+#     cleanup pass first; running `gha-workflow-linter lint --auto-fix`
+#     locally pins the offenders in one go.
+#   * Add a schedule if you want drift caught on repositories whose
+#     workflows change rarely. A deleted upstream tag or repository
+#     breaks a pin without anyone touching the file.
+# =============================================================================
+name: 'Security Scans (Action Pins)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main', 'master']
+    paths: ['.github/**']
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  action-pin-audit:
+    name: 'Action Pin Audit'
+    permissions:
+      contents: read
+    # REPLACE the pinned SHA below with a security-workflows release SHA.
+    # The all-zero SHA is a non-functional placeholder, NOT a real commit.
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/security-workflows/.github/workflows/action-pin-audit.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
+    # Optional inputs, shown with their defaults:
+    #  with:
+    #   full_scan: false          # true audits every file, not just changed
+    #   linter_version: ''        # pin gha-workflow-linter for reproducibility
+    #   path_prefix: '.'
+    #   runs_on: 'ubuntu-latest'  # Linux or macOS; Windows unsupported
+    #   harden_runner_egress: 'block'
