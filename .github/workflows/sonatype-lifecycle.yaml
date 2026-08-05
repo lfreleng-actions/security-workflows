@@ -544,7 +544,7 @@ jobs:
         # yamllint disable-line rule:line-length
         continue-on-error: ${{ inputs.build_permit_fail != false }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/gradle-build-action@fec7e8a18d3edde71e21012c56fcd5721a0e3128  # v0.5.0
+        uses: lfreleng-actions/gradle-build-action@1b4ea0f67a3632b0e2fb427fb2af52704ae57849  # v0.6.0
         with:
           # gradle-build-action names this 'path', not 'path_prefix'
           path: ${{ inputs.path_prefix }}
