@@ -54,6 +54,41 @@ jobs:
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
 
+  # Cover the Go path: 'go mod tidy' resolves go.sum, then the scan
+  # targets go.sum directly rather than the source tree. Audit egress
+  # because module downloads reach proxy.golang.org, beyond the
+  # allow-listed toolchain set.
+  sonatype-lifecycle-go:
+    name: 'Sonatype Lifecycle (Go)'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-go-project'
+      build_type: 'go'
+      build_permit_egress_traffic: true
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  # Cover the Go REST-API path: generates a cyclonedx-gomod SBOM and
+  # uploads it directly instead of running the CLI scan action. Relies
+  # on the same fixture already having an application registered in
+  # Nexus IQ from the 'cli' job above; the lookup step fails fast with
+  # a clear error otherwise, rather than the API silently creating one.
+  sonatype-lifecycle-go-sbom:
+    name: 'Sonatype Lifecycle (Go, REST API)'
+    needs: sonatype-lifecycle-go
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-go-project'
+      build_type: 'go'
+      scan_mode: 'sbom'
+      build_permit_egress_traffic: true
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
   # Exercise the SonarQube Cloud lane's build stage, which is where the
   # lane does its own work; the scan itself is the action's concern.
   # Audit egress because a real Maven build reaches artifact CDNs beyond
