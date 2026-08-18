@@ -453,6 +453,91 @@ pins the offenders in one pass. Scope the pull-request trigger with a
 `paths` filter, as both examples do, so unrelated changes are not gated
 on it.
 
+### D20 — `sonatype-lifecycle.yaml` gets a `go` `build_type`
+
+Added after the initial port, migrating ONAP `policy-opa-pdp` off its
+Jenkins `gerrit-nexus-iq-go-clm` job. That job branches on
+`nexus-iq-use-cli`: the CLI branch runs `go mod tidy` then points the
+Nexus IQ CLI's build analyser at `go.sum`; the REST API branch (what
+`policy-opa-pdp` actually ran) instead uploads a `cyclonedx-gomod`
+SBOM. Both exist only because the legacy CLI release predates native
+Go SBOM support.
+
+The lane defaults to the CLI branch (`scan_mode: cli`): `go mod tidy`,
+then `scan_targets` resolves to `go.sum` whenever `build_type: go`,
+unconditionally and without a caller override — Go has no equivalent
+of `scan_targets` for a reason. `tidy` rather than `download` is
+deliberate and matches legacy: a scan job's checkout is never
+committed back, so mutating go.sum in place is safe, and a drifting
+go.sum should fail the scan rather than have a `download`-only step
+silently tolerate it. Neither `go mod tidy` nor the `sbom`-mode steps
+below carry `continue-on-error`, unlike the Maven/Gradle build steps:
+a partial Maven build still leaves resolved artefacts behind, but a
+failed `tidy` or SBOM generation leaves the scan target itself stale,
+missing or empty, and letting the scan proceed regardless would be a
+silently-incomplete result rather than a partial one.
+
+`scan_mode: sbom` reinstates the REST branch as an opt-in alternative,
+added on request to keep parity for projects that ran it
+(`policy-opa-pdp` among them), rather than only the CLI branch this
+lane originally shipped with. It runs `cyclonedx-gomod` (version
+pinned via `go_sbom_tool_version`) to generate a CycloneDX SBOM, looks
+up Nexus IQ's internal application UUID for the resolved `publicId`
+(a separate value the CLI branch never needs), and `POST`s the SBOM to
+`sources/cyclonedx` — replacing the `sonatype-lifecycle-scan-action`
+step entirely rather than running alongside it. That upload has no
+synchronous verdict the way the CLI's build analyser does, so
+`fail_on_policy_warnings`, `ignore_scanning_errors`,
+`ignore_system_errors` and the `iq_cli_version`/`iq_java_version`/
+`iq_java_distribution` inputs are all inert in `sbom` mode — matching
+why the legacy Jenkins job never voted on its own result either. This
+mode should stay the exception rather than the default: reach for
+`cli` unless matching a project's pre-existing REST-branch history is
+the goal.
+
+The input started life as `go_scan_mode`, Go-specific in name as well
+as effect. PR #38 review pointed out that nothing about it actually is
+Go-specific — it resolves an application UUID and `POST`s a CycloneDX
+document, which any ecosystem this lane can produce one for could
+reuse — so it was renamed to `scan_mode` before merge, while it still
+only had one caller and renaming cost nothing. Only the Go path drives
+`sbom` today; generalising the mechanism to other ecosystems, adopting
+`lfreleng-actions/sbom-action` in place of a hand-rolled
+`cyclonedx-gomod` call, and verifying Nexus IQ ingests syft-generated
+CycloneDX as well are tracked separately (issues #39 and #40) rather
+than folded into this decision.
+
+That same review surfaced that Sonatype's own guidance has moved.
+Their [Go Application Analysis][go-app-analysis] page, last modified
+18 Feb 2026 (checked 2026-08), no longer mentions CycloneDX or an
+SBOM route for Go at all, recommends a `go.list` file from
+`go list -deps` as giving "the most accurate results", and describes
+`go.sum` as "supported, but may include dependencies that are not
+used by the application". That is a stronger version of the argument
+this section already made: the vendor has not just stopped needing
+the SBOM route for Go, it has stopped recommending it entirely, which
+is further reason for `sbom` to stay the exception. Whether to adopt
+`go.list` as the `cli`-mode scan target is tracked separately
+(issue #41): it would change the migrated `policy-opa-pdp` job's
+results from the Jenkins job it replaces, which is a decision for
+whoever owns that migration rather than this record.
+
+[go-app-analysis]: https://help.sonatype.com/en/go-application-analysis.html
+
+Go's toolchain version takes no caller input at all: `Gather build
+metadata` now runs for `build_type: 'go'` too, and `Setup Go` reads
+`steps.metadata.outputs.go_go_version` -- the same `build-metadata-action`
+already used to auto-detect `java_version` for Maven/Gradle, rather
+than a second, Go-specific `go_version`/`go_version_file` pair reading
+`go.mod` independently. Review on the PR pointed out `go-workflows`
+already derives its Go version matrix through this action (at an
+older pin), so this lane carrying its own separate detection was
+redundant; tracked as issue #43 before landing here. This
+intentionally diverges from `sonarqube-cloud.yaml`'s own Go path,
+which still takes `go_version`/`go_version_file` inputs directly --
+bringing that lane in line is left for #43 rather than done as a
+side effect of this one.
+
 ### Legacy defects not carried forward
 
 The audit of the source SonarCloud workflows found the following. None

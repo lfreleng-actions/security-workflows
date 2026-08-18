@@ -37,10 +37,13 @@ jobs:
     uses: lfreleng-actions/security-workflows/.github/workflows/sonatype-lifecycle.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
     # Optional inputs, shown with their defaults:
     #  with:
-    #   build_type: 'none'          # 'maven' or 'gradle' to build first
+    #   build_type: 'none'          # 'maven', 'gradle' or 'go' to build first
     #   java_version: ''            # build JDK; empty auto-detects
     #   iq_java_version: '17'       # Nexus IQ CLI runtime JDK
-    #   scan_targets: '.'           # file(s)/folder(s) to scan
+    #   scan_mode: 'cli'            # 'cli' scans go.sum; 'sbom' uploads a
+    #                               # cyclonedx-gomod SBOM instead (Go only)
+    #   scan_targets: '.'           # file(s)/folder(s); ignored for 'go',
+    #                               # which always scans go.sum or an SBOM
     #   harden_runner_egress: 'block'
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}

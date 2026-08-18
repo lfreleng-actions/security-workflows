@@ -10,7 +10,17 @@
 # ecosystems where dependencies only resolve at build time (Maven,
 # Gradle), an optional pre-scan build populates the workspace first via
 # the build_type input; the build runs inside the scan job so both share
-# a workspace without artefact plumbing.
+# a workspace without artefact plumbing. Go's build_type does not build
+# the project either -- it runs 'go mod tidy' so go.sum fully reflects
+# the dependency graph, then, per scan_mode, either scans go.sum
+# directly (the default, 'cli') or generates a CycloneDX SBOM with
+# cyclonedx-gomod and uploads it through the Nexus IQ REST API ('sbom').
+# Both mirror the two branches ONAP's legacy Jenkins Go CLM jobs picked
+# between via nexus-iq-use-cli; 'sbom' exists only for parity with
+# projects that ran that branch, since it forgoes the policy gating
+# 'cli' has (see scan_mode's own description). scan_mode is not itself
+# Go-specific -- any ecosystem this lane can produce a CycloneDX SBOM
+# for could reuse it -- but only the Go path drives it today.
 #
 # The build JDK and the Nexus IQ CLI runtime JDK are configured
 # INDEPENDENTLY. IQ CLI 2.x requires Java 17, while projects frequently
@@ -125,7 +135,8 @@ on:
 
       # --- Optional pre-scan build ---
       build_type:
-        description: "Pre-scan build to run: 'none', 'maven' or 'gradle'"
+        description: >-
+          Pre-scan build to run: 'none', 'maven', 'gradle' or 'go'
         required: false
         type: string
         default: 'none'
@@ -204,6 +215,35 @@ on:
         required: false
         type: string
         default: 'build'
+      scan_mode:
+        description: >-
+          How results reach Nexus IQ: 'cli' runs the Nexus IQ CLI's
+          build analyser against scan_targets (or go.sum for Go).
+          'sbom' instead generates a CycloneDX SBOM and uploads it
+          through the Nexus IQ REST API directly, bypassing the CLI
+          entirely -- mirroring legacy Jenkins Go CLM jobs with
+          nexus-iq-use-cli: false. Only the Go path drives 'sbom'
+          today, via cyclonedx-gomod. 'sbom' cannot gate on policy: the
+          upload is fire-and-forget, so fail_on_policy_warnings,
+          ignore_scanning_errors, ignore_system_errors, iq_cli_version,
+          iq_java_version and iq_java_distribution all have no effect
+          on it.
+        required: false
+        type: string
+        default: 'cli'
+      go_sbom_tool_version:
+        description: >-
+          cyclonedx-gomod version generating the SBOM. Only used when
+          build_type is 'go' and scan_mode is 'sbom'.
+        required: false
+        type: string
+        default: '1.10.0'
+        # Not a commit-SHA pin like the uses: steps below: go install
+        # resolves this through the module proxy, checksum-verified
+        # against GOSUMDB rather than pinned to a specific content
+        # hash in this file. Tightening further only makes sense if
+        # cyclonedx-gomod stays in-lane rather than moving behind
+        # sbom-action's own SHA pin (see issue #40).
 
       # --- Maven settings.xml synthesis (optional) ---
       # Supplying maven_server_ids turns these on. The lane then builds a
@@ -375,13 +415,39 @@ jobs:
           # otherwise skip the build stage silently and scan an
           # unpopulated workspace.
           case "${BUILD_TYPE}" in
-            none | maven | gradle) ;;
+            none | maven | gradle | go) ;;
             *)
-              echo "::error::build_type must be 'none', 'maven' or" \
-                "'gradle' (received: '${BUILD_TYPE}')"
+              echo "::error::build_type must be 'none', 'maven'," \
+                "'gradle' or 'go' (received: '${BUILD_TYPE}')"
               exit 1
               ;;
           esac
+
+      - name: 'Validate scan_mode input'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+          SCAN_MODE: ${{ inputs.scan_mode }}
+        run: |
+          # Only build_type: go drives 'sbom' today, but validated
+          # unconditionally like build_type itself.
+          case "${SCAN_MODE}" in
+            cli | sbom) ;;
+            *)
+              echo "::error::scan_mode must be 'cli' or 'sbom'" \
+                "(received: '${SCAN_MODE}')"
+              exit 1
+              ;;
+          esac
+          # Every 'sbom'-mode step is gated on build_type == 'go'; a
+          # non-Go build_type would pass validation, generate and
+          # upload nothing, then silently fall through to a CLI scan
+          # instead. Remove once #40 generalises 'sbom' beyond Go.
+          if [ "${SCAN_MODE}" = 'sbom' ] && [ "${BUILD_TYPE}" != 'go' ]; then
+            echo "::error::scan_mode 'sbom' currently requires" \
+              "build_type 'go' (received build_type: '${BUILD_TYPE}')"
+            exit 1
+          fi
 
       - name: 'Validate timeout_minutes input'
         shell: bash
@@ -480,12 +546,13 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
-      # Detect the project's Java version so the pre-scan build uses the
-      # toolchain the project expects, rather than whatever the Nexus IQ
-      # CLI needs. Only relevant when a build runs.
+      # Detect the project's Java or Go version so the pre-scan build
+      # uses the toolchain the project expects, rather than whatever
+      # the Nexus IQ CLI needs.
       - name: 'Gather build metadata'
         id: metadata
-        if: inputs.build_type != 'none'
+        # yamllint disable-line rule:line-length
+        if: inputs.build_type == 'maven' || inputs.build_type == 'gradle' || inputs.build_type == 'go'
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/build-metadata-action@504ee845e954566de1d220137fd40635e15468a9  # v0.8.0
         with:
@@ -557,6 +624,61 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 'Setup Go'
+        if: inputs.build_type == 'go'
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: ${{ steps.metadata.outputs.go_go_version }}
+          # setup-go prefers go-version when both are set; this is a
+          # defensive fallback should build-metadata-action ever fail
+          # to resolve a version and still report success
+          # yamllint disable-line rule:line-length
+          go-version-file: ${{ format('{0}/go.mod', inputs.path_prefix) }}
+          cache: false
+
+      # Nothing here compiles the project: 'go mod tidy' resolves and
+      # prunes go.sum so it fully reflects the dependency graph before
+      # the scan reads it, either as the CLI's target directly ('cli')
+      # or as cyclonedx-gomod's input ('sbom'). No continue-on-error:
+      # a failed tidy leaves go.sum stale or incomplete, and scanning
+      # that would be worse than failing outright.
+      - name: 'Go mod tidy'
+        if: inputs.build_type == 'go'
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        run: |
+          go mod tidy
+          # A tidy go.sum can still be empty for a dependency-free
+          # module; scanning that silently would look identical to a
+          # broken resolution, so fail loudly instead either way.
+          if [ ! -s go.sum ]; then
+            echo "::error::go.sum is empty after 'go mod tidy'"
+            exit 1
+          fi
+
+      # Only scan_mode: 'sbom' needs an SBOM; 'cli' scans go.sum
+      # directly. Version-pinned rather than @latest, unlike the legacy
+      # Jenkins script, per this repository's pinning policy for
+      # anything a lane installs and runs. No continue-on-error, to
+      # match 'Go mod tidy' above: a failed generation should not fall
+      # through to uploading a missing or stale bom.xml.
+      - name: 'Generate Go SBOM'
+        if: inputs.build_type == 'go' && inputs.scan_mode == 'sbom'
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        env:
+          GOMOD_VERSION: ${{ inputs.go_sbom_tool_version }}
+        run: |
+          gomod_pkg='github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod'
+          go install "${gomod_pkg}@v${GOMOD_VERSION}"
+          "$(go env GOPATH)/bin/cyclonedx-gomod" mod -output bom.xml \
+            -output-version 1.5
+          if [ ! -s bom.xml ]; then
+            echo "::error::bom.xml is empty after cyclonedx-gomod"
+            exit 1
+          fi
+
       # Derive the Nexus IQ application id from the repository actually
       # under scan. The scan action defaults it from the calling
       # repository, which is wrong whenever `repository` points
@@ -577,9 +699,53 @@ jobs:
           echo "id=${app_id}" >> "$GITHUB_OUTPUT"
           echo "Nexus IQ application id: ${app_id}"
 
+      # scan_mode: 'sbom' only. Mirrors the legacy Jenkins REST
+      # branch: the upload endpoint needs Nexus IQ's internal
+      # application id, a UUID distinct from the publicId resolved
+      # above, so look that up first, then upload the SBOM. Nexus IQ
+      # evaluates the upload asynchronously, so this cannot gate on
+      # policy the way the CLI does -- see scan_mode's description. No
+      # continue-on-error, for the same reason as the two steps above.
+      - name: 'Upload Go SBOM to Nexus IQ (REST API)'
+        if: inputs.build_type == 'go' && inputs.scan_mode == 'sbom'
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        env:
+          NEXUS_IQ_SERVER: ${{ vars.NEXUS_IQ_SERVER }}
+          NEXUS_IQ_USERNAME: ${{ vars.NEXUS_IQ_USERNAME }}
+          NEXUS_IQ_PASSWORD: ${{ secrets.nexus_iq_password }}
+          PUBLIC_ID: ${{ steps.application.outputs.id }}
+        run: |
+          set -euo pipefail
+
+          # A curl config file keeps the credentials out of argv, where
+          # a process listing on the runner could otherwise read them.
+          # The trap covers early exits below as well as normal exit.
+          curl_config="$(mktemp "${RUNNER_TEMP}/nexus-iq-curl.XXXXXXXXXX")"
+          trap 'rm -f "${curl_config}"' EXIT
+          printf 'user = "%s:%s"\n' \
+            "${NEXUS_IQ_USERNAME}" "${NEXUS_IQ_PASSWORD}" > "${curl_config}"
+
+          app_uuid="$(curl -sS -f -K "${curl_config}" \
+            "${NEXUS_IQ_SERVER}/api/v2/applications?publicId=${PUBLIC_ID}" \
+            | jq -r '.applications[0].id // empty')"
+          if [ -z "${app_uuid}" ]; then
+            echo "::error::No Nexus IQ application found for" \
+              "publicId '${PUBLIC_ID}'"
+            exit 1
+          fi
+
+          upload_url="${NEXUS_IQ_SERVER}/api/v2/scan/applications"
+          upload_url="${upload_url}/${app_uuid}/sources/cyclonedx"
+          curl -sS -f -K "${curl_config}" -X POST \
+            -H 'Content-Type: application/xml' \
+            --data '@bom.xml' "${upload_url}"
+
       # no_checkout is 'true' because this workflow has already checked
       # out, via whichever of the two paths above applied.
       - name: 'Sonatype Lifecycle scan'
+        # scan_mode: 'sbom' uploads directly via REST above instead.
+        if: inputs.build_type != 'go' || inputs.scan_mode != 'sbom'
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/sonatype-lifecycle-scan-action@f5b35cbd1c76597611c426e7e788c147e11c8e98  # v0.2.0
         with:
@@ -590,7 +756,11 @@ jobs:
           java_version: ${{ inputs.iq_java_version }}
           iq_cli_version: ${{ inputs.iq_cli_version }}
           application_id: ${{ steps.application.outputs.id }}
-          scan_targets: ${{ inputs.scan_targets }}
+          # The Go path always scans go.sum rather than the source
+          # tree; scan_targets is a Maven/Gradle/none concern there, so
+          # it takes no caller input for Go.
+          # yamllint disable-line rule:line-length
+          scan_targets: ${{ inputs.build_type == 'go' && format('{0}/go.sum', inputs.path_prefix) || inputs.scan_targets }}
           advanced_properties: ${{ inputs.advanced_properties }}
           ignore_scanning_errors: ${{ inputs.ignore_scanning_errors }}
           ignore_system_errors: ${{ inputs.ignore_system_errors }}
