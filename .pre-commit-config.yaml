@@ -71,9 +71,10 @@ repos:
     hooks:
       - id: write-good
         files: "\\.(rst|md|markdown|mdown|mkdn)$"
-        # docs/BRIEF.md is a design-decisions record, not polished
-        # prose; exempt it from the prose style linter.
-        exclude: "^docs/BRIEF\\.md$"
+        # docs/BRIEF.md and docs/INTERIM_EVALUATION.md are
+        # design-decisions records, not polished prose; exempt them
+        # from the prose style linter.
+        exclude: "^docs/(BRIEF|INTERIM_EVALUATION)\\.md$"
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: 745eface02aef23e168a8afb6b5737818efbea95  # frozen: v0.11.0.1
