@@ -393,7 +393,7 @@ jobs:
       # mode was unreachable however the caller asked for it.
       - name: 'Load egress allow-list'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/harden-runner-block-action@d86087ddc1c2d27182a886ec788d39b88201c8ed  # v0.3.0
+        uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
         with:
           config: ${{ inputs.harden_runner_allowlist }}
       - name: 'Harden runner'
@@ -407,6 +407,6 @@ jobs:
 
       - name: 'Provide link to Scorecard report'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/openssf-scorecard-summary-action@307b3f6d85f7cde3e85731b76bd32612707c894d  # v0.1.1
+        uses: lfreleng-actions/openssf-scorecard-summary-action@ebeeaa5a07a9ffc8276318da79c1c0c9762be242  # v0.1.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
