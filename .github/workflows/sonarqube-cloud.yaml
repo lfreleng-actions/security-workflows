@@ -715,7 +715,7 @@ jobs:
       # mode was unreachable however the caller asked for it.
       - name: 'Load egress allow-list'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/harden-runner-block-action@d86087ddc1c2d27182a886ec788d39b88201c8ed  # v0.3.0
+        uses: lfreleng-actions/harden-runner-block-action@805eedb0508c07714b61887a2b87a5c4bbeff22a  # v0.12.1
         with:
           config: ${{ inputs.harden_runner_allowlist }}
       - name: 'Harden runner'
@@ -730,7 +730,7 @@ jobs:
       - name: 'Checkout Gerrit change'
         if: inputs.gerrit_refspec != ''
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/checkout-gerrit-change-action@f87b90a3370e62dad310797fedc7fd3700c75832  # v1.0.2
+        uses: lfreleng-actions/checkout-gerrit-change-action@298f53bbbc1d5f9e54df9feb484d110dc2b33197  # v1.1.0
         with:
           gerrit-refspec: ${{ inputs.gerrit_refspec }}
           gerrit-project: ${{ inputs.gerrit_project }}
@@ -791,7 +791,7 @@ jobs:
         if: inputs.build_type == 'maven'
         continue-on-error: ${{ inputs.build_permit_fail == true }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/maven-build-action@6a687d420895015a60abd139e37ba1ae7e78e8e8  # v0.3.1
+        uses: lfreleng-actions/maven-build-action@4fe48909bcb696f286d83b197d84fbb64b4e020e  # v0.4.0
         with:
           path_prefix: ${{ inputs.path_prefix }}
           # yamllint disable-line rule:line-length
@@ -830,7 +830,7 @@ jobs:
         if: inputs.build_type == 'tox'
         continue-on-error: ${{ inputs.build_permit_fail == true }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/tox-run-action@9a4e2f4a9abddb5c674b8e0debb6d2a1318b7b7f  # v0.1.2
+        uses: lfreleng-actions/tox-run-action@3b211e593f1f0e2495b4306222252d1dd849a204  # v0.1.3
         with:
           path_prefix: ${{ inputs.path_prefix }}
           python-version: ${{ inputs.python_version }}
@@ -928,7 +928,7 @@ jobs:
       # the two are not interchangeable.
       - name: 'SonarQube Cloud scan'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/sonarqube-cloud-scan-action@0f7a9fa8e3e77663a007d6f6f19752c8dacf7def  # v1.4.0
+        uses: lfreleng-actions/sonarqube-cloud-scan-action@7ea9483ebee0d6d4f739ffca5bfb0035a2ece0d4  # v1.4.1
         with:
           sonar_token: ${{ secrets.sonar_token }}
           no_checkout: 'true'

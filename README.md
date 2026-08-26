@@ -84,6 +84,32 @@ anything else with HTTP 400. A Gerrit checkout action cannot run there.
 Scorecard also scores a GitHub repository as a whole, so a per-change
 scan would tell you nothing useful in any case.
 
+## Java test coverage
+
+`sonarqube-cloud.yaml` runs `build_type: maven` builds through
+[`maven-build-action`][mba], which aggregates JaCoCo coverage across a
+reactor's subprojects. Callers need no extra input and no `pom.xml` glue.
+
+Sonar reads coverage per subproject, so by default a subproject's report
+counts the tests living in that same subproject and no others. Where tests
+in one subproject exercise another's code — normal in a layered reactor —
+Sonar drops that coverage without saying so. [Sonar's guidance][sonar-multi]
+fixes this with a dedicated aggregator subproject, which in turn has to list
+every subproject by hand; forget to add a new one and its coverage
+disappears with no error. The action instead points every agent at one
+execution-data file and reruns the report goal once the reactor has
+finished, so nothing enumerates subprojects. Its README covers the cases
+where it leaves a project's own arrangements alone.
+
+**Migrating from Jenkins:** drop any JaCoCo flags the job passed in.
+Carried over, they read as the project arranging coverage itself, and the
+aggregation steps aside. Projects that merged execution data through a
+property of their own (OpenDaylight's `odl.jacoco.aggregateFile`, and the
+`pom.xml` profile behind it) need neither any more.
+
+[mba]: https://github.com/lfreleng-actions/maven-build-action
+[sonar-multi]: https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/test-coverage/java-test-coverage#add-coverage-in-a-multi-module-maven-project
+
 ## Usage
 
 Each lane ships two callers under `examples/<lane>/`, added alongside
