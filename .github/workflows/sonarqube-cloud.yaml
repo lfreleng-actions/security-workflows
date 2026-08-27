@@ -302,6 +302,20 @@ on:
         required: false
         type: string
         default: ''
+      jacoco_mode:
+        description: >-
+          Where the JaCoCo agents write execution data, passed to
+          maven-build-action. 'auto' leaves the layout alone wherever
+          the project appears to place it itself, which includes a
+          parent POM setting the jacoco.destFile or jacoco.dataFile
+          property. Coverage then stays per subproject: a subproject's
+          report counts only the tests living in that same subproject.
+          Set 'shared' where the project sets those properties but has
+          no aggregation of its own, so the reactor writes one file and
+          coverage counts across subprojects.
+        required: false
+        type: string
+        default: 'auto'
       gradle_version:
         description: 'Gradle version'
         required: false
@@ -806,6 +820,7 @@ jobs:
           global-settings: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
           # Sonar reads coverage from the JaCoCo report, so produce one.
           run-jacoco: 'true'
+          jacoco-mode: ${{ inputs.jacoco_mode }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
