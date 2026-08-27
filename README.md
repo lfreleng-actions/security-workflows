@@ -101,6 +101,15 @@ execution-data file and reruns the report goal once the reactor has
 finished, so nothing enumerates subprojects. Its README covers the cases
 where it leaves a project's own arrangements alone.
 
+One of those cases needs the caller's help. A parent POM that sets the
+`jacoco.destFile` or `jacoco.dataFile` property reads as the project
+placing its own execution data, and the action leaves the layout alone.
+Where the project sets those properties but aggregates nothing itself,
+coverage stays per subproject and Sonar reports a figure that looks
+plausible rather than zero. Pass `jacoco_mode: 'shared'` to say the
+reactor may write one file. OpenDaylight projects need this: `odlparent`
+sets both properties.
+
 **Migrating from Jenkins:** drop any JaCoCo flags the job passed in.
 Carried over, they read as the project arranging coverage itself, and the
 aggregation steps aside. Projects that merged execution data through a
