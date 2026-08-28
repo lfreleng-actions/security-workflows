@@ -65,6 +65,24 @@ on:
         required: false
         type: string
         default: ''
+      fetch_depth:
+        description: >-
+          Git history depth; 0 fetches all history for all branches and
+          tags. CLM evaluates the dependency manifests on disk rather
+          than commit history, so the shallow default costs nothing
+          here; raise it for a build_type that inspects git state.
+        required: false
+        type: number
+        default: 1
+      submodules:
+        description: >-
+          Submodule checkout: 'false', 'true' or 'recursive'. Nexus IQ
+          reports on whatever it was given, so a project whose
+          dependency manifests live in a submodule needs this set or
+          the scan passes having evaluated an incomplete tree.
+        required: false
+        type: string
+        default: 'false'
 
       # --- Project layout ---
       path_prefix:
@@ -406,6 +424,38 @@ jobs:
             exit 1
           fi
 
+      - name: 'Validate fetch_depth input'
+        shell: bash
+        env:
+          FETCH_DEPTH: ${{ inputs.fetch_depth }}
+        run: |
+          # actions/checkout treats a negative or non-integer depth as a
+          # git error deep inside the checkout, long after the job has
+          # hardened and started. 0 is legitimate and means full
+          # history; the default here is 1.
+          if ! [[ "${FETCH_DEPTH}" =~ ^[0-9]+$ ]]; then
+            echo "::error::fetch_depth must be a non-negative integer" \
+              "(received: '${FETCH_DEPTH}')"
+            exit 1
+          fi
+
+      - name: 'Validate submodules input'
+        shell: bash
+        env:
+          SUBMODULES: ${{ inputs.submodules }}
+        run: |
+          # actions/checkout treats any unrecognised value as false,
+          # so a typo would silently leave submodule sources out of
+          # the scan.
+          case "${SUBMODULES}" in
+            true | false | recursive) ;;
+            *)
+              echo "::error::submodules must be 'true', 'false' or" \
+                "'recursive' (received: '${SUBMODULES}')"
+              exit 1
+              ;;
+          esac
+
       - name: 'Validate build_type input'
         shell: bash
         env:
@@ -536,6 +586,8 @@ jobs:
           delay: '0s'
           repository: ${{ inputs.repository || github.repository }}
           ref: refs/heads/${{ inputs.gerrit_branch }}
+          fetch-depth: ${{ inputs.fetch_depth }}
+          submodules: ${{ inputs.submodules }}
 
       - name: 'Checkout repository'
         if: inputs.gerrit_refspec == ''
@@ -544,6 +596,8 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref }}
+          fetch-depth: ${{ inputs.fetch_depth }}
+          submodules: ${{ inputs.submodules }}
           persist-credentials: false
 
       # Detect the project's Java or Go version so the pre-scan build
