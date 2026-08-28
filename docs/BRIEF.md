@@ -42,11 +42,18 @@ option. Churn alone argues for co-location.
 
 ### The actual argument: cohesion
 
-CLM is not JVM-specific. `releng-reusable-workflows` already carries
-Node.js and Gradle CLM callers alongside Maven, so the lane cannot live
-in `java-workflows` without stranding consumers. The same holds for
-zizmor, Scorecard and package hardening, none of which are tied to a
-language. A tool-agnostic security repository is the right home.
+CLM is not JVM-specific. `releng-reusable-workflows` carries Node.js and
+Gradle CLM callers alongside Maven: `composed-maven-nexus-iq.yaml`,
+`composed-gradle-nexus-iq.yaml`, and — reaching
+`reuse-sonatype-lifecycle.yaml` directly rather than through a
+`composed-*` wrapper — `call-gerrit-nodejs-sonatype-lifecycle.yaml`,
+which builds with `node-build-action` first (checked 2026-08 against
+`master`). The Node.js caller carries no `nexus-iq` in its filename, so
+searching for `composed-*-nexus-iq` alone misses it. The lane therefore
+cannot live in `java-workflows` without stranding consumers. The same
+holds for zizmor, Scorecard and package hardening, none of which are
+tied to a language. A tool-agnostic security repository is the right
+home.
 
 ### Scoping rule
 
@@ -92,8 +99,9 @@ Migrating from `lfit/releng-reusable-workflows`:
 | `reuse-verify-github-actions.yaml` | `action-pin-audit.yaml` | Full |
 
 Nine `composed-*` wrappers in the source repository (seven SonarCloud
-variants, two Nexus IQ) are **not** ported as files. Each bundled a
-build with a scan, and each was a source of intra-repository
+variants, plus `composed-maven-nexus-iq.yaml` and
+`composed-gradle-nexus-iq.yaml`) are **not** ported as files. Each
+bundled a build with a scan, and each was a source of intra-repository
 cross-references. Their behaviour folds into a `build_type` input on the
 relevant lane. Net: sixteen files become seven lanes.
 
