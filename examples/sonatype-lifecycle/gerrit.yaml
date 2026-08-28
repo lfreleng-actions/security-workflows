@@ -29,6 +29,8 @@
 #   * Gerrit voting connects over SSH (tcp/29418). Ensure the harden-runner
 #     allow-list in use carries that entry, or the vote job fails in block
 #     mode.
+#   * The lane call below builds a Maven project. For a Go project, see the
+#     GO PROJECTS block beside the maven_* inputs.
 #
 # AUTHENTICATED BUILDS:
 #   Where the pre-scan build needs credentialed repository access, there
@@ -183,6 +185,27 @@ jobs:
       maven_profile_id: 'onap-nexus'
       # yamllint disable-line rule:line-length
       maven_profile_repository_url: 'https://nexus.onap.org/content/groups/public/'
+      #
+      # GO PROJECTS: drop mvn_params and every maven_* input above (plus
+      # maven_server_password below, which only the settings.xml
+      # synthesis needs), then set:
+      #
+      #   build_type: 'go'
+      #   scan_mode: 'cli'
+      #
+      # 'cli' is the lane default and the right choice for a new
+      # project: the Nexus IQ CLI scans go.sum and returns a policy
+      # verdict the job can fail on.
+      #
+      # MIGRATING OFF gerrit-nexus-iq-go-clm: that Jenkins job had two
+      # branches, and a project that ran the REST one
+      # (nexus-iq-use-cli: false) needs scan_mode: 'sbom' to reproduce
+      # it -- a cyclonedx-gomod SBOM POSTed to the Nexus IQ REST API,
+      # evaluated asynchronously and so with no verdict to gate on.
+      # Pin whichever branch the project ran EXPLICITLY for the
+      # cutover: the two modes do not evaluate the same thing, and
+      # taking the default silently changes the results the before and
+      # after comparison rests on. Move to 'cli' once that is done.
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
       maven_server_password: ${{ secrets.NEXUS_PASSWORD }}

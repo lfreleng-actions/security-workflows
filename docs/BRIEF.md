@@ -42,11 +42,18 @@ option. Churn alone argues for co-location.
 
 ### The actual argument: cohesion
 
-CLM is not JVM-specific. `releng-reusable-workflows` already carries
-Node.js and Gradle CLM callers alongside Maven, so the lane cannot live
-in `java-workflows` without stranding consumers. The same holds for
-zizmor, Scorecard and package hardening, none of which are tied to a
-language. A tool-agnostic security repository is the right home.
+CLM is not JVM-specific. `releng-reusable-workflows` carries Node.js and
+Gradle CLM callers alongside Maven: `composed-maven-nexus-iq.yaml`,
+`composed-gradle-nexus-iq.yaml`, and — reaching
+`reuse-sonatype-lifecycle.yaml` directly rather than through a
+`composed-*` wrapper — `call-gerrit-nodejs-sonatype-lifecycle.yaml`,
+which builds with `node-build-action` first (checked 2026-08 against
+`main`). The Node.js caller carries no `nexus-iq` in its filename, so
+searching for `composed-*-nexus-iq` alone misses it. The lane therefore
+cannot live in `java-workflows` without stranding consumers. The same
+holds for zizmor, Scorecard and package hardening, none of which are
+tied to a language. A tool-agnostic security repository is the right
+home.
 
 ### Scoping rule
 
@@ -92,8 +99,9 @@ Migrating from `lfit/releng-reusable-workflows`:
 | `reuse-verify-github-actions.yaml` | `action-pin-audit.yaml` | Full |
 
 Nine `composed-*` wrappers in the source repository (seven SonarCloud
-variants, two Nexus IQ) are **not** ported as files. Each bundled a
-build with a scan, and each was a source of intra-repository
+variants, plus `composed-maven-nexus-iq.yaml` and
+`composed-gradle-nexus-iq.yaml`) are **not** ported as files. Each
+bundled a build with a scan, and each was a source of intra-repository
 cross-references. Their behaviour folds into a `build_type` input on the
 relevant lane. Net: sixteen files become seven lanes.
 
@@ -495,6 +503,18 @@ mode should stay the exception rather than the default: reach for
 `cli` unless matching a project's pre-existing REST-branch history is
 the goal.
 
+A caller migrating off `gerrit-nexus-iq-go-clm` should therefore set
+`scan_mode` explicitly rather than take the default. `policy-opa-pdp`
+ran the REST branch, so its caller wants `scan_mode: 'sbom'` for the
+cutover comparison; omitting the input selects `cli` and changes what
+the scan evaluates with no error to say so, which invalidates the
+before/after check the migration exists to make.
+`examples/sonatype-lifecycle/gerrit.yaml` carries the same note beside
+the input, since that is the file ONAP projects copy — while showing
+`cli` in its generic Go recipe, so a project arriving without that
+history does not inherit the exception. Once the comparison is done,
+the migrated caller should move to `cli` as well.
+
 The input started life as `go_scan_mode`, Go-specific in name as well
 as effect. PR #38 review pointed out that nothing about it actually is
 Go-specific — it resolves an application UUID and `POST`s a CycloneDX
@@ -586,6 +606,54 @@ The CodeQL source workflow contributed two of its own:
   Python scan that completes in minutes. A hung extraction burned six
   hours of runner time before failing. The lane defaults to 60 and
   exposes the value.
+
+### Dropped inputs: what callers actually set
+
+Several source-workflow inputs have no equivalent on the lanes, and the
+migration audit could not initially establish whether anyone depended
+on them. Surveying the callers settles most of it. Two kinds of
+evidence appear below: a GitHub-wide code search for the input name
+under `.github/workflows/`, and a read of sixteen caller files drawn
+from the forty-seven that name a `composed-*` workflow, spanning ONAP,
+O-RAN-SC, OpenDaylight and Akraino. Both were taken in August 2026,
+against each repository's default branch.
+
+- **`PRE_BUILD_SCRIPT_PATH`** is set by no caller anywhere. The name
+  occurs only in the seven source workflows that declare it. The
+  inline `PRE_BUILD_SCRIPT` fares no better: its one occurrence in the
+  estate, `opendaylight/mdsal`, targets the tox verify workflow rather
+  than a scan workflow. The two jobs that do run a pre-scan script,
+  both in O-RAN-SC, use `PRE_BUILD_SCRIPT_URL` pointing into
+  `o-ran-sc/ci-management` — which the lane keeps as
+  `prescan_script_url`.
+- **`OP_SECRET_REFERENCE`** is likewise set by no caller. The name
+  occurs only in `reuse-sonatype-lifecycle.yaml`, which declares it.
+- **`MVN_POM_FILE`** is set by two callers, in four jobs, and every
+  value names a file called `pom.xml`: `pom.xml` in `onap/ccsdk-sli`,
+  and `pmproducer/pom.xml`, `influxlogger/pom.xml` and
+  `datafilecollector/pom.xml` in `o-ran-sc/nonrtric-plt-ranpm`. The
+  directory varies; the filename never does. `path_prefix` already
+  selects the directory, so nothing in the estate needs the
+  non-standard filename this input existed to permit.
+- **`ENV_SECRETS`** is the literal `"{}"` everywhere it appears in the
+  sample. No scan caller puts a secret into the build environment, so
+  the third-party environment-splatting action has no requirement
+  behind it.
+- **`ENV_VARS`** carries two shapes. One job sets `MAVEN_OPTS`, which
+  is `mvn_opts` on both lanes. The other nine set
+  `SONARCLOUD_QUALITYGATE_WAIT` and `SCAN_DEV_BRANCH`, which name scan
+  behaviour rather than build environment, yet reach the build through
+  `maven-build-action`'s `env-vars` while the analysis itself runs as
+  `sonar-maven-plugin`; whether they ever took effect is unclear. The
+  lane covers the first intent with `wait_for_quality_gate` and
+  `fail_on_quality_gate` as typed inputs.
+
+This records what callers set, not a refusal to serve the underlying
+need — a project could want any of these tomorrow, and #58, #59, #60
+and #61 remain the place to argue for them. It does mean none of the
+omissions blocks the migration, and that a replacement should be
+designed against a stated requirement rather than restored on the
+assumption that the old input was load-bearing.
 
 ## Shared input vocabulary
 
