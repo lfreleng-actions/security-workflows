@@ -503,6 +503,15 @@ mode should stay the exception rather than the default: reach for
 `cli` unless matching a project's pre-existing REST-branch history is
 the goal.
 
+A caller migrating off `gerrit-nexus-iq-go-clm` should therefore set
+`scan_mode` explicitly rather than take the default. `policy-opa-pdp`
+ran the REST branch, so its caller wants `scan_mode: 'sbom'` for the
+cutover comparison; omitting the input selects `cli` and changes what
+the scan evaluates with no error to say so, which invalidates the
+before/after check the migration exists to make.
+`examples/sonatype-lifecycle/gerrit.yaml` carries the same note beside
+the input, since that is the file ONAP projects copy.
+
 The input started life as `go_scan_mode`, Go-specific in name as well
 as effect. PR #38 review pointed out that nothing about it actually is
 Go-specific — it resolves an application UUID and `POST`s a CycloneDX
