@@ -544,6 +544,19 @@ whoever owns that migration rather than this record.
 
 [go-app-analysis]: https://help.sonatype.com/en/go-application-analysis.html
 
+Go's toolchain version takes no caller input at all: `Setup Go` reads
+the project's own `go.mod` through `go-version-file`, so the
+directives in that file decide. It originally read
+`build-metadata-action`'s `go_go_version` instead, for consistency
+with how `java_version` is detected for Maven and Gradle, on the
+reasoning that a lane carrying its own version detection duplicated
+what the shared action already does. That instrument turned out to be
+the wrong one — it reports the `go` directive alone, and `go.mod` has
+two — so D21 records what replaced it and why the analogy with
+`java_version` does not hold. `sonarqube-cloud.yaml` reaches the same
+file through `go-test-action`, and layers `go_version`/
+`go_version_file` inputs on top so a caller there can still override.
+
 ### D21 — Go toolchain selection reads go.mod, not build metadata
 
 `go.mod` carries two version directives, and `toolchain` outranks
@@ -602,20 +615,6 @@ surfaces that in the log and the job summary instead of letting the
 fallback publish a figure nobody chose. Both outcomes produce a
 coverage number, and a wrong one reads exactly like a right one —
 the D12 hazard in its coverage form.
-
-Go's toolchain version takes no caller input at all: `Gather build
-metadata` now runs for `build_type: 'go'` too, and `Setup Go` reads
-`steps.metadata.outputs.go_go_version` -- the same `build-metadata-action`
-already used to auto-detect `java_version` for Maven/Gradle, rather
-than a second, Go-specific `go_version`/`go_version_file` pair reading
-`go.mod` independently. Review on the PR pointed out `go-workflows`
-already derives its Go version matrix through this action (at an
-older pin), so this lane carrying its own separate detection was
-redundant; tracked as issue #43 before landing here. This
-intentionally diverges from `sonarqube-cloud.yaml`'s own Go path,
-which still takes `go_version`/`go_version_file` inputs directly --
-bringing that lane in line is left for #43 rather than done as a
-side effect of this one.
 
 ### Legacy defects not carried forward
 
