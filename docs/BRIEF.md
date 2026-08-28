@@ -604,6 +604,54 @@ The CodeQL source workflow contributed two of its own:
   hours of runner time before failing. The lane defaults to 60 and
   exposes the value.
 
+### Dropped inputs: what callers actually set
+
+Several source-workflow inputs have no equivalent on the lanes, and the
+migration audit could not initially establish whether anyone depended
+on them. Surveying the callers settles most of it. Two kinds of
+evidence appear below: a GitHub-wide code search for the input name
+under `.github/workflows/`, and a read of sixteen caller files drawn
+from the forty-seven that name a `composed-*` workflow, spanning ONAP,
+O-RAN-SC, OpenDaylight and Akraino. Both were taken in August 2026,
+against each repository's default branch.
+
+- **`PRE_BUILD_SCRIPT_PATH`** is set by no caller anywhere. The name
+  occurs only in the seven source workflows that declare it. The
+  inline `PRE_BUILD_SCRIPT` fares no better: its one occurrence in the
+  estate, `opendaylight/mdsal`, targets the tox verify workflow rather
+  than a scan workflow. The two jobs that do run a pre-scan script,
+  both in O-RAN-SC, use `PRE_BUILD_SCRIPT_URL` pointing into
+  `o-ran-sc/ci-management` — which the lane keeps as
+  `prescan_script_url`.
+- **`OP_SECRET_REFERENCE`** is likewise set by no caller. The name
+  occurs only in `reuse-sonatype-lifecycle.yaml`, which declares it.
+- **`MVN_POM_FILE`** is set by two callers, in four jobs, and every
+  value names a file called `pom.xml`: `pom.xml` in `onap/ccsdk-sli`,
+  and `pmproducer/pom.xml`, `influxlogger/pom.xml` and
+  `datafilecollector/pom.xml` in `o-ran-sc/nonrtric-plt-ranpm`. The
+  directory varies; the filename never does. `path_prefix` already
+  selects the directory, so nothing in the estate needs the
+  non-standard filename this input existed to permit.
+- **`ENV_SECRETS`** is the literal `"{}"` everywhere it appears in the
+  sample. No scan caller puts a secret into the build environment, so
+  the third-party environment-splatting action has no requirement
+  behind it.
+- **`ENV_VARS`** carries two shapes. One job sets `MAVEN_OPTS`, which
+  is `mvn_opts` on both lanes. The other nine set
+  `SONARCLOUD_QUALITYGATE_WAIT` and `SCAN_DEV_BRANCH`, which name scan
+  behaviour rather than build environment, yet reach the build through
+  `maven-build-action`'s `env-vars` while the analysis itself runs as
+  `sonar-maven-plugin`; whether they ever took effect is unclear. The
+  lane covers the first intent with `wait_for_quality_gate` and
+  `fail_on_quality_gate` as typed inputs.
+
+This records what callers set, not a refusal to serve the underlying
+need — a project could want any of these tomorrow, and #58, #59, #60
+and #61 remain the place to argue for them. It does mean none of the
+omissions blocks the migration, and that a replacement should be
+designed against a stated requirement rather than restored on the
+assumption that the old input was load-bearing.
+
 ## Shared input vocabulary
 
 Common to every lane, matching the sibling repositories:
