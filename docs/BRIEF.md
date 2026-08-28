@@ -48,7 +48,7 @@ Gradle CLM callers alongside Maven: `composed-maven-nexus-iq.yaml`,
 `reuse-sonatype-lifecycle.yaml` directly rather than through a
 `composed-*` wrapper — `call-gerrit-nodejs-sonatype-lifecycle.yaml`,
 which builds with `node-build-action` first (checked 2026-08 against
-`master`). The Node.js caller carries no `nexus-iq` in its filename, so
+`main`). The Node.js caller carries no `nexus-iq` in its filename, so
 searching for `composed-*-nexus-iq` alone misses it. The lane therefore
 cannot live in `java-workflows` without stranding consumers. The same
 holds for zizmor, Scorecard and package hardening, none of which are
@@ -510,7 +510,10 @@ cutover comparison; omitting the input selects `cli` and changes what
 the scan evaluates with no error to say so, which invalidates the
 before/after check the migration exists to make.
 `examples/sonatype-lifecycle/gerrit.yaml` carries the same note beside
-the input, since that is the file ONAP projects copy.
+the input, since that is the file ONAP projects copy — while showing
+`cli` in its generic Go recipe, so a project arriving without that
+history does not inherit the exception. Once the comparison is done,
+the migrated caller should move to `cli` as well.
 
 The input started life as `go_scan_mode`, Go-specific in name as well
 as effect. PR #38 review pointed out that nothing about it actually is

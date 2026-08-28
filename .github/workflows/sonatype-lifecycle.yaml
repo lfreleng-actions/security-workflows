@@ -79,7 +79,14 @@ on:
           Submodule checkout: 'false', 'true' or 'recursive'. Nexus IQ
           reports on whatever it was given, so a project whose
           dependency manifests live in a submodule needs this set or
-          the scan passes having evaluated an incomplete tree.
+          the scan passes having evaluated an incomplete tree. Caveat
+          on the Gerrit path: the pinned checkout action refreshes
+          submodules after moving to the change only for 'true', so
+          'recursive' scans them as they stood at the branch tip; and
+          it omits --init, so a submodule the change ADDS is left
+          empty under either value. Tracked as
+          lfreleng-actions/checkout-gerrit-change-action#142; this lane
+          gains the fix when that action is repinned.
         required: false
         type: string
         default: 'false'

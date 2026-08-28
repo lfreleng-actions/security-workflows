@@ -191,20 +191,21 @@ jobs:
       # synthesis needs), then set:
       #
       #   build_type: 'go'
-      #   scan_mode: 'sbom'
+      #   scan_mode: 'cli'
       #
-      # scan_mode selects how results reach Nexus IQ, and the two modes
-      # do not evaluate the same thing:
-      #   'cli'  - the Nexus IQ CLI scans go.sum; the lane default
-      #   'sbom' - a cyclonedx-gomod SBOM is POSTed to the Nexus IQ REST
-      #            API, matching the legacy Jenkins
-      #            gerrit-nexus-iq-go-clm job's nexus-iq-use-cli: false
-      #            branch
+      # 'cli' is the lane default and the right choice for a new
+      # project: the Nexus IQ CLI scans go.sum and returns a policy
+      # verdict the job can fail on.
       #
-      # Pin scan_mode EXPLICITLY when migrating off that Jenkins job.
-      # Because the lane defaults to 'cli', a caller that omits the
-      # input gets results the Jenkins job never produced, with no error
-      # to say so, and the cutover comparison is quietly invalidated.
+      # MIGRATING OFF gerrit-nexus-iq-go-clm: that Jenkins job had two
+      # branches, and a project that ran the REST one
+      # (nexus-iq-use-cli: false) needs scan_mode: 'sbom' to reproduce
+      # it -- a cyclonedx-gomod SBOM POSTed to the Nexus IQ REST API,
+      # evaluated asynchronously and so with no verdict to gate on.
+      # Pin whichever branch the project ran EXPLICITLY for the
+      # cutover: the two modes do not evaluate the same thing, and
+      # taking the default silently changes the results the before and
+      # after comparison rests on. Move to 'cli' once that is done.
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
       maven_server_password: ${{ secrets.NEXUS_PASSWORD }}

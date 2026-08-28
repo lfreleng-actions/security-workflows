@@ -54,6 +54,33 @@ jobs:
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
 
+  # Exercise the checkout inputs rather than the scan. fetch_depth and
+  # submodules are validated, then handed to actions/checkout, and a
+  # fault in that plumbing surfaces as a scan of an incomplete tree
+  # rather than as an error -- so a run that merely completes is worth
+  # having only because the alternative is no coverage at all. Both
+  # values are non-default, so the job proves the inputs travel rather
+  # than that their defaults do. Sequenced behind the scan-only job
+  # because both target the same fixture, and so the same Nexus IQ
+  # application.
+  #
+  # This covers the plumbing, NOT the resulting tree: no fixture in the
+  # organisation carries a submodule, so nothing here can catch a
+  # submodule silently missing from the scan. Tracked as #74.
+  sonatype-lifecycle-checkout-inputs:
+    name: 'Sonatype Lifecycle (checkout inputs)'
+    needs: sonatype-lifecycle-scan-only
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-node-project'
+      build_type: 'none'
+      fetch_depth: 0
+      submodules: 'recursive'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
   # Cover the Go path: 'go mod tidy' resolves go.sum, then the scan
   # targets go.sum directly rather than the source tree. Audit egress
   # because module downloads reach proxy.golang.org, beyond the
