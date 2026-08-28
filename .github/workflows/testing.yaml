@@ -154,6 +154,10 @@ jobs:
 
   # Cover the non-JVM build path: a different action, a different
   # coverage artefact, and the same continue-on-error plumbing.
+  #
+  # NOTE: test-go-project's go.mod declares a 'go' directive and no
+  # 'toolchain' directive, so neither this leg nor the CLM lane's Go
+  # legs exercise toolchain selection at all. See #75.
   sonarqube-cloud-go:
     name: 'SonarQube Cloud (Go)'
     permissions:
