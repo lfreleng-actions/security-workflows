@@ -544,19 +544,77 @@ whoever owns that migration rather than this record.
 
 [go-app-analysis]: https://help.sonatype.com/en/go-application-analysis.html
 
-Go's toolchain version takes no caller input at all: `Gather build
-metadata` now runs for `build_type: 'go'` too, and `Setup Go` reads
-`steps.metadata.outputs.go_go_version` -- the same `build-metadata-action`
-already used to auto-detect `java_version` for Maven/Gradle, rather
-than a second, Go-specific `go_version`/`go_version_file` pair reading
-`go.mod` independently. Review on the PR pointed out `go-workflows`
-already derives its Go version matrix through this action (at an
-older pin), so this lane carrying its own separate detection was
-redundant; tracked as issue #43 before landing here. This
-intentionally diverges from `sonarqube-cloud.yaml`'s own Go path,
-which still takes `go_version`/`go_version_file` inputs directly --
-bringing that lane in line is left for #43 rather than done as a
-side effect of this one.
+Go's toolchain version takes no caller input at all: `Setup Go` reads
+the project's own `go.mod` through `go-version-file`, so the
+directives in that file decide. It originally read
+`build-metadata-action`'s `go_go_version` instead, for consistency
+with how `java_version` is detected for Maven and Gradle, on the
+reasoning that a lane carrying its own version detection duplicated
+what the shared action already does. That instrument turned out to be
+the wrong one — it reports the `go` directive alone, and `go.mod` has
+two — so D21 records what replaced it and why the analogy with
+`java_version` does not hold. `sonarqube-cloud.yaml` reaches the same
+file through `go-test-action`, and layers `go_version`/
+`go_version_file` inputs on top so a caller there can still override.
+
+### D21 — Go toolchain selection reads go.mod, not build metadata
+
+`go.mod` carries two version directives, and `toolchain` outranks
+`go` where present. `actions/setup-go` v6 onwards reads both from
+`go-version-file` and prefers `toolchain`; it also treats an explicit
+`go-version` as beating `go-version-file` outright, and exports
+`GOTOOLCHAIN=local` for the rest of the job.
+
+Those three behaviours combine badly. The CLM lane originally passed
+`build-metadata-action`'s `go_go_version` — documented as the `go`
+directive alone — as `go-version`, which suppressed the file and so
+the `toolchain` directive. With `GOTOOLCHAIN=local` set, Go will not
+fetch the toolchain the module asks for, so a project pinning one
+newer than its `go` directive failed the scan outright rather than
+building on an older Go.
+
+So Go version selection is the one place the lanes do **not** reach
+for the shared metadata action. Issue #43 proposed the opposite —
+extending `build-metadata-action` to the Sonar lane's Go path for
+consistency with the JDK — and following it would have propagated
+this defect rather than removed it. `build-metadata-action` does emit
+`go_toolchain` beside `go_go_version`, so a correct value can be
+composed from the two, but doing so restates parsing setup-go already
+performs, including release-candidate toolchains and the
+`GOTOOLCHAIN=local` escape.
+
+The lanes therefore align on `go-version-file`, which both already
+reach: the CLM lane passes it to `setup-go` directly, and the Sonar
+lane through `go-test-action`, whose `go_version_file` defaults to
+`go.mod` and yields only to an explicit `go_version`. The JDK
+comparison does not carry over, because `actions/setup-java` has no
+equivalent of reading the build file itself.
+
+Checked 2026-08 against `setup-go` v6.5.0 and v7.0.0 and
+`build-metadata-action` v0.8.0. No fixture in the organisation
+carries a `toolchain` directive, so nothing tests this; see #75.
+
+### D22 — The build names the coverage it measured
+
+`maven-build-action` aggregates JaCoCo across a reactor and reports
+the result as `coverage_report_paths`; the Sonar lane forwards it to
+`sonar.coverage.jacoco.xmlReportPaths`.
+
+Maven analysis mode could derive the paths from the project model and
+did. CLI mode never reads that model, so coverage rested on
+`sonar-project.properties` or a default glob, and a reactor whose
+modules report anywhere else scanned with no coverage while still
+publishing a figure. Naming the paths the build measured makes both
+backends read the same reports, and makes a `cli`-mode Java scan
+correct for any reactor shape rather than only the conventional one.
+
+An empty value is a statement rather than an absence: the build
+measured no aggregate, because the project places its own coverage
+data, binds no JaCoCo agent, or the aggregation backed off. The lane
+surfaces that in the log and the job summary instead of letting the
+fallback publish a figure nobody chose. Both outcomes produce a
+coverage number, and a wrong one reads exactly like a right one —
+the D12 hazard in its coverage form.
 
 ### Legacy defects not carried forward
 

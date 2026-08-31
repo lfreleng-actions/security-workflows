@@ -132,8 +132,40 @@ jobs:
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
+  # The same fixture through the other analysis backend. CLI mode
+  # never reads the Maven project model, so it is the mode
+  # coverage_report_paths exists for: without it a reactor's coverage
+  # rests on a default glob. Sequenced behind the maven-mode leg
+  # because both analyse the same Sonar project, and concurrent
+  # analyses of one project race.
+  #
+  # This exercises the wiring; it does NOT prove the value decided
+  # anything. test-maven-project declares
+  # sonar.coverage.jacoco.xmlReportPaths in its own
+  # sonar-project.properties, deliberately, so the CLI scanner finds
+  # reactor coverage whether or not the lane forwards the build's
+  # paths. Discriminating needs a fixture without that property, or
+  # an assertion on the analysis log. See #77.
+  sonarqube-cloud-maven-cli:
+    name: 'SonarQube Cloud (Maven, CLI analysis)'
+    needs: sonarqube-cloud-maven
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonarqube-cloud.yaml
+    with:
+      repository: 'lfreleng-actions/test-maven-project'
+      build_type: 'maven'
+      analysis_mode: 'cli'
+      build_permit_egress_traffic: true
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
   # Cover the non-JVM build path: a different action, a different
   # coverage artefact, and the same continue-on-error plumbing.
+  #
+  # NOTE: test-go-project's go.mod declares a 'go' directive and no
+  # 'toolchain' directive, so neither this leg nor the CLM lane's Go
+  # legs exercise toolchain selection at all. See #75.
   sonarqube-cloud-go:
     name: 'SonarQube Cloud (Go)'
     permissions:

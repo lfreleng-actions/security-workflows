@@ -607,13 +607,15 @@ jobs:
           submodules: ${{ inputs.submodules }}
           persist-credentials: false
 
-      # Detect the project's Java or Go version so the pre-scan build
-      # uses the toolchain the project expects, rather than whatever
-      # the Nexus IQ CLI needs.
+      # Detect the project's Java version so the pre-scan build uses
+      # the toolchain the project expects, rather than whatever the
+      # Nexus IQ CLI needs. Go is deliberately absent: 'Setup Go'
+      # below reads go.mod directly, which is strictly better than
+      # anything this step can report (see that step).
       - name: 'Gather build metadata'
         id: metadata
         # yamllint disable-line rule:line-length
-        if: inputs.build_type == 'maven' || inputs.build_type == 'gradle' || inputs.build_type == 'go'
+        if: inputs.build_type == 'maven' || inputs.build_type == 'gradle'
         # yamllint disable-line rule:line-length
         uses: lfreleng-actions/build-metadata-action@504ee845e954566de1d220137fd40635e15468a9  # v0.8.0
         with:
@@ -685,15 +687,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # go.mod carries two version directives, and the newer
+      # 'toolchain' one wins where present. setup-go v6 onwards reads
+      # both from the file and prefers 'toolchain'; a value passed as
+      # go-version would instead override the file entirely, because
+      # go-version beats go-version-file. Reading the file is
+      # therefore the only form that honours both directives, so this
+      # step takes no version from build-metadata-action, whose
+      # go_go_version output reports the 'go' directive alone.
+      #
+      # Getting that wrong fails the build rather than degrading it:
+      # setup-go exports GOTOOLCHAIN=local, so Go refuses to fetch the
+      # toolchain the module asks for and stops with 'go.mod requires
+      # go >= X (running go Y; GOTOOLCHAIN=local)'.
       - name: 'Setup Go'
         if: inputs.build_type == 'go'
         # yamllint disable-line rule:line-length
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: ${{ steps.metadata.outputs.go_go_version }}
-          # setup-go prefers go-version when both are set; this is a
-          # defensive fallback should build-metadata-action ever fail
-          # to resolve a version and still report success
           # yamllint disable-line rule:line-length
           go-version-file: ${{ format('{0}/go.mod', inputs.path_prefix) }}
           cache: false

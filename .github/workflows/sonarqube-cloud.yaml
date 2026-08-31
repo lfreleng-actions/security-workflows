@@ -802,6 +802,7 @@ jobs:
       # per-action soft-fail input, so build_permit_fail behaves
       # identically whichever build_type is selected.
       - name: 'Maven build'
+        id: maven-build
         if: inputs.build_type == 'maven'
         continue-on-error: ${{ inputs.build_permit_fail == true }}
         # yamllint disable-line rule:line-length
@@ -823,6 +824,36 @@ jobs:
           jacoco-mode: ${{ inputs.jacoco_mode }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # An empty coverage_report_paths after a Maven build is a
+      # statement, not merely an absent value: the build measured no
+      # aggregate coverage, so the scan below falls back to whatever
+      # the backend finds on disk. Either way the analysis publishes a
+      # coverage figure, and a wrong one reads exactly like a right
+      # one, so say so here rather than leave it to be noticed on the
+      # dashboard weeks later.
+      - name: 'Report absent aggregate coverage'
+        # yamllint disable-line rule:line-length
+        if: ${{ inputs.build_type == 'maven' && steps.maven-build.outputs.coverage_report_paths == '' }}
+        shell: bash
+        run: |
+          echo "::warning::The Maven build measured no aggregate" \
+            "JaCoCo coverage, so the analysis falls back to the" \
+            "report paths it discovers by itself. Expected when the" \
+            "project places its own coverage data or binds no JaCoCo" \
+            "agent; otherwise the published figure may understate the" \
+            "reactor."
+          {
+            echo '### ⚠️ No aggregate JaCoCo coverage'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Quoted delimiter: the body carries backticks, which would
+          # otherwise read as command substitution.
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          The Maven build produced no aggregate report, so
+          `sonar.coverage.jacoco.xmlReportPaths` went unset and the
+          analysis used its own discovery instead.
+          SUMMARY
 
       - name: 'Gradle build'
         if: inputs.build_type == 'gradle'
@@ -943,7 +974,7 @@ jobs:
       # the two are not interchangeable.
       - name: 'SonarQube Cloud scan'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/sonarqube-cloud-scan-action@7ea9483ebee0d6d4f739ffca5bfb0035a2ece0d4  # v1.4.1
+        uses: lfreleng-actions/sonarqube-cloud-scan-action@c8c342bf621f6e7e8622b12a19fa3539a6237f3c  # v1.5.0
         with:
           sonar_token: ${{ secrets.sonar_token }}
           no_checkout: 'true'
@@ -961,6 +992,16 @@ jobs:
           build_wrapper_out_dir: ${{ inputs.build_wrapper_out_dir }}
           prescan_script_url: ${{ inputs.prescan_script_url }}
           lc_all: ${{ inputs.lc_all }}
+          # The aggregate JaCoCo report paths the Maven build measured,
+          # named rather than guessed at. Empty for every other
+          # build_type, and empty when the build left coverage to the
+          # project, so the scan then falls back to whatever the
+          # backend finds by itself. Maven mode could derive these from
+          # the project model; CLI mode never reads it, so an explicit
+          # value is the only way a cli-mode Java scan sees coverage
+          # from a reactor at all.
+          # yamllint disable-line rule:line-length
+          coverage_report_paths: ${{ steps.maven-build.outputs.coverage_report_paths }}
           # yamllint disable-line rule:line-length
           analysis_mode: ${{ inputs.analysis_mode != '' && inputs.analysis_mode || (inputs.build_type == 'maven' && 'maven' || 'cli') }}
           # yamllint disable-line rule:line-length
