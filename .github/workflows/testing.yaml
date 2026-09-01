@@ -333,3 +333,68 @@ jobs:
           fi
           echo "Forwarded coverage report paths: ${PATHS}"
           echo 'Aggregate coverage measured and forwarded ✅'
+
+  # go.mod carries two version directives and 'toolchain' outranks
+  # 'go'. Passing a version as setup-go's go-version suppresses the
+  # file, and so the toolchain directive, and the build then runs and
+  # scans perfectly well on the older Go -- there is no error to
+  # notice. Compare what the lane resolved against what the fixture
+  # asks for; see BRIEF.md D21.
+  assert-go-toolchain:
+    name: 'Assert (Go toolchain)'
+    needs: sonatype-lifecycle-go
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+      - name: 'Checkout fixture'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: 'lfreleng-actions/test-go-project'
+          persist-credentials: false
+      - name: 'Compare resolved Go version against go.mod'
+        shell: bash
+        env:
+          RESOLVED: ${{ needs.sonatype-lifecycle-go.outputs.go_version }}
+        run: |
+          set -euo pipefail
+
+          # Read the directive rather than hardcode the version, so
+          # bumping the fixture cannot silently disable the check.
+          TOOLCHAIN="$(sed -n 's/^toolchain go//p' go.mod | head -1)"
+
+          if [ -z "${TOOLCHAIN}" ]; then
+            # With one directive there are not two answers to tell
+            # apart, so passing here would mean nothing at all.
+            echo "::error::The fixture declares no 'toolchain'" \
+              "directive, so this assertion cannot distinguish a" \
+              "correct resolution from the regression it exists to" \
+              "catch. Add one that resolves differently from the" \
+              "'go' directive; see issue #75."
+            exit 1
+          fi
+
+          if [ -z "${RESOLVED}" ]; then
+            echo "::error::The CLM lane reported no Go version."
+            exit 1
+          fi
+
+          echo "go.mod toolchain directive: ${TOOLCHAIN}"
+          echo "Lane resolved:              ${RESOLVED}"
+
+          if [ "${RESOLVED}" != "${TOOLCHAIN}" ]; then
+            echo "::error::The lane installed Go ${RESOLVED}, but" \
+              "go.mod asks for ${TOOLCHAIN}. setup-go reads both" \
+              "directives from go-version-file and prefers" \
+              "'toolchain'; an explicit go-version input suppresses" \
+              "the file entirely."
+            exit 1
+          fi
+          echo 'Go toolchain resolved as the project asked ✅'
