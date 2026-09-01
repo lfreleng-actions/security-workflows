@@ -285,3 +285,51 @@ jobs:
     with:
       repository: 'lfreleng-actions/test-python-project'
       full_scan: true
+
+  # ---------------------------------------------------------------
+  # Assertions
+  # ---------------------------------------------------------------
+  # The legs above prove the lanes run. These prove they did the
+  # right thing. Both guard silent failures: a scan that measured
+  # nothing, or evaluated the wrong tree, succeeds exactly as loudly
+  # as one that did not, so only an assertion separates them.
+
+  # Catches the aggregation half of the coverage path: an empty value
+  # means the build measured nothing to forward, so the analysis fell
+  # back to its own discovery and published whatever it found.
+  #
+  # It does NOT catch the forwarding half. This output and the scan
+  # action's input read the same build step, so deleting the input
+  # alone leaves this green. Proving the value reached the scanner
+  # needs the action to report what it used, which it does not
+  # expose; see #77.
+  assert-coverage-paths:
+    name: 'Assert (coverage paths)'
+    needs: sonarqube-cloud-maven
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+      - name: 'Require aggregate coverage paths'
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          PATHS: ${{ needs.sonarqube-cloud-maven.outputs.coverage_report_paths }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PATHS}" ]; then
+            echo "::error::The Maven build measured no aggregate" \
+              "JaCoCo coverage, so the lane forwarded no report" \
+              "paths and the analysis published whatever it found" \
+              "by itself. test-maven-project is a multi-module" \
+              "reactor with JaCoCo bound, so this is a regression" \
+              "rather than a project that opted out."
+            exit 1
+          fi
+          echo "Forwarded coverage report paths: ${PATHS}"
+          echo 'Aggregate coverage measured and forwarded ✅'
