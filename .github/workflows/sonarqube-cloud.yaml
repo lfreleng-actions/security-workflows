@@ -499,6 +499,19 @@ on:
           redacts when it contains registered secrets.
         required: false
 
+    # Outputs exist so a caller -- including this repository's own
+    # self-test -- can assert on what the lane did, rather than infer
+    # it from the job having gone green. A scan that evaluated the
+    # wrong thing succeeds just as loudly as one that did not.
+    outputs:
+      coverage_report_paths:
+        description: >-
+          The JaCoCo report paths the pre-scan Maven build measured
+          and the lane forwarded to the analysis. Empty for every
+          other build_type, and empty when the build produced no
+          aggregate report.
+        value: ${{ jobs.scan.outputs.coverage_report_paths }}
+
 permissions: {}
 
 jobs:
@@ -712,6 +725,9 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      # yamllint disable-line rule:line-length
+      coverage_report_paths: ${{ steps.maven-build.outputs.coverage_report_paths }}
     permissions:
       # The workflow checks out the repository under analysis. Results
       # go to SonarQube Cloud over the network, not to GitHub code
