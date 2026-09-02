@@ -85,13 +85,51 @@ jobs:
   # targets go.sum directly rather than the source tree. Audit egress
   # because module downloads reach proxy.golang.org, beyond the
   # allow-listed toolchain set.
+  # Resolve the Go fixture to one commit, up front. The Go legs and
+  # the assertion below each check the fixture out independently, so
+  # on a moving default branch they could read different trees: the
+  # lanes would report versions resolved from one go.mod while the
+  # assertion compares them against another, giving a false mismatch
+  # or a wrong skip. Most likely to bite exactly when the pending
+  # toolchain edit lands, which is when the check starts to matter.
+  go-fixture-ref:
+    name: 'Resolve Go fixture commit'
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+      - name: 'Resolve default branch head'
+        id: resolve
+        shell: bash
+        env:
+          FIXTURE: 'lfreleng-actions/test-go-project'
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote "https://github.com/${FIXTURE}.git" \
+            refs/heads/main | cut -f1)"
+          if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve ${FIXTURE} refs/heads/main"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "${FIXTURE} pinned at ${sha}"
+
   sonatype-lifecycle-go:
     name: 'Sonatype Lifecycle (Go)'
+    needs: go-fixture-ref
     permissions:
       contents: read
     uses: ./.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
+      ref: ${{ needs.go-fixture-ref.outputs.sha }}
       build_type: 'go'
       build_permit_egress_traffic: true
     secrets:
@@ -104,12 +142,13 @@ jobs:
   # a clear error otherwise, rather than the API silently creating one.
   sonatype-lifecycle-go-sbom:
     name: 'Sonatype Lifecycle (Go, REST API)'
-    needs: sonatype-lifecycle-go
+    needs: [go-fixture-ref, sonatype-lifecycle-go]
     permissions:
       contents: read
     uses: ./.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
+      ref: ${{ needs.go-fixture-ref.outputs.sha }}
       build_type: 'go'
       scan_mode: 'sbom'
       build_permit_egress_traffic: true
@@ -168,11 +207,13 @@ jobs:
   # legs exercise toolchain selection at all. See #75.
   sonarqube-cloud-go:
     name: 'SonarQube Cloud (Go)'
+    needs: go-fixture-ref
     permissions:
       contents: read
     uses: ./.github/workflows/sonarqube-cloud.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
+      ref: ${{ needs.go-fixture-ref.outputs.sha }}
       build_type: 'go'
       build_permit_egress_traffic: true
     secrets:
@@ -285,3 +326,148 @@ jobs:
     with:
       repository: 'lfreleng-actions/test-python-project'
       full_scan: true
+
+  # ---------------------------------------------------------------
+  # Assertions
+  # ---------------------------------------------------------------
+  # The legs above prove the lanes run. These prove they did the
+  # right thing. Both guard silent failures: a scan that measured
+  # nothing, or evaluated the wrong tree, succeeds exactly as loudly
+  # as one that did not, so only an assertion separates them.
+
+  # Catches the aggregation half of the coverage path: an empty value
+  # means the build measured nothing to forward, so the analysis fell
+  # back to its own discovery and published whatever it found.
+  #
+  # It does NOT catch the forwarding half. This output and the scan
+  # action's input read the same build step, so deleting the input
+  # alone leaves this green. Proving the value reached the scanner
+  # needs the action to report what it used, which it does not
+  # expose; see #77.
+  assert-coverage-paths:
+    name: 'Assert (coverage paths)'
+    needs: sonarqube-cloud-maven
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+      - name: 'Require aggregate coverage paths'
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          PATHS: ${{ needs.sonarqube-cloud-maven.outputs.coverage_report_paths }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PATHS}" ]; then
+            echo "::error::The Maven build measured no aggregate" \
+              "JaCoCo coverage, so the lane forwarded no report" \
+              "paths and the analysis published whatever it found" \
+              "by itself. test-maven-project is a multi-module" \
+              "reactor with JaCoCo bound, so this is a regression" \
+              "rather than a project that opted out."
+            exit 1
+          fi
+          echo "Forwarded coverage report paths: ${PATHS}"
+          echo 'Aggregate coverage measured and forwarded ✅'
+
+  # go.mod carries two version directives and 'toolchain' outranks
+  # 'go'. Passing a version as setup-go's go-version suppresses the
+  # file, and so the toolchain directive, and the build then runs and
+  # scans perfectly well on the older Go -- there is no error to
+  # notice. Compare what the lane resolved against what the fixture
+  # asks for; see BRIEF.md D21.
+  assert-go-toolchain:
+    name: 'Assert (Go toolchain)'
+    needs: [go-fixture-ref, sonatype-lifecycle-go, sonarqube-cloud-go]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+      - name: 'Checkout fixture'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: 'lfreleng-actions/test-go-project'
+          # The same commit both lanes scanned, so the go.mod read
+          # here is the go.mod they resolved their versions from.
+          ref: ${{ needs.go-fixture-ref.outputs.sha }}
+          persist-credentials: false
+      - name: 'Compare resolved Go versions against go.mod'
+        shell: bash
+        env:
+          CLM_VERSION: ${{ needs.sonatype-lifecycle-go.outputs.go_version }}
+          # yamllint disable-line rule:line-length
+          SONAR_VERSION: ${{ needs.sonarqube-cloud-go.outputs.go_version }}
+        run: |
+          set -euo pipefail
+
+          # Read the directive rather than hardcode the version, so
+          # bumping the fixture cannot silently disable the check.
+          TOOLCHAIN="$(sed -n 's/^toolchain go//p' go.mod | head -1)"
+
+          echo "CLM lane resolved:   ${CLM_VERSION:-<none>}"
+          echo "Sonar lane resolved: ${SONAR_VERSION:-<none>}"
+
+          status=0
+          for lane in CLM Sonar; do
+            case "${lane}" in
+              CLM) resolved="${CLM_VERSION}" ;;
+              Sonar) resolved="${SONAR_VERSION}" ;;
+            esac
+            if [ -z "${resolved}" ]; then
+              echo "::error::The ${lane} lane reported no Go version."
+              status=1
+            fi
+          done
+          [ "${status}" -eq 0 ] || exit 1
+
+          if [ -z "${TOOLCHAIN}" ]; then
+            # With one directive there are not two answers to tell
+            # apart, so an equality check here would pass whatever the
+            # lanes did. Report the gap rather than assert nothing and
+            # call it a pass -- and rather than fail, which would hold
+            # the whole self-test red on a fixture this repository
+            # does not own.
+            echo "::warning::test-go-project declares no 'toolchain'" \
+              "directive, so this check cannot tell a correct" \
+              "resolution from the regression it exists to catch." \
+              "Skipped rather than passed; see issue #75."
+            {
+              echo '### ⚠️ Go toolchain assertion skipped'
+              echo
+              echo 'The fixture declares one version directive, so'
+              echo 'there are not two answers to distinguish. This'
+              echo 'check becomes meaningful once the fixture gains a'
+              echo 'toolchain directive -- see issue #75.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "go.mod toolchain directive: ${TOOLCHAIN}"
+          for lane in CLM Sonar; do
+            case "${lane}" in
+              CLM) resolved="${CLM_VERSION}" ;;
+              Sonar) resolved="${SONAR_VERSION}" ;;
+            esac
+            if [ "${resolved}" != "${TOOLCHAIN}" ]; then
+              echo "::error::The ${lane} lane installed Go" \
+                "${resolved}, but go.mod asks for ${TOOLCHAIN}." \
+                "setup-go reads both directives from" \
+                "go-version-file and prefers 'toolchain'; an" \
+                "explicit go-version input suppresses the file."
+              status=1
+            fi
+          done
+          [ "${status}" -eq 0 ] || exit 1
+          echo 'Both lanes resolved the toolchain the project asked ✅'

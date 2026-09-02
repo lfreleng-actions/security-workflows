@@ -499,6 +499,27 @@ on:
           redacts when it contains registered secrets.
         required: false
 
+    # Outputs exist so a caller -- including this repository's own
+    # self-test -- can assert on what the lane did, rather than infer
+    # it from the job having gone green. A scan that evaluated the
+    # wrong thing succeeds just as loudly as one that did not.
+    outputs:
+      coverage_report_paths:
+        description: >-
+          The JaCoCo report paths the pre-scan Maven build measured
+          and the lane forwarded to the analysis. Empty for every
+          other build_type, and empty when the build produced no
+          aggregate report.
+        value: ${{ jobs.scan.outputs.coverage_report_paths }}
+      go_version:
+        description: >-
+          The Go version the pre-scan test run actually used, read
+          from the toolchain on PATH. Normally resolved from the
+          project's go.mod, but go_version and go_version_file both
+          override that, so this reports the result rather than its
+          source. Empty for every other build_type.
+        value: ${{ jobs.scan.outputs.go_version }}
+
 permissions: {}
 
 jobs:
@@ -712,6 +733,10 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      # yamllint disable-line rule:line-length
+      coverage_report_paths: ${{ steps.maven-build.outputs.coverage_report_paths }}
+      go_version: ${{ steps.go-version.outputs.version }}
     permissions:
       # The workflow checks out the repository under analysis. Results
       # go to SonarQube Cloud over the network, not to GitHub code
@@ -900,6 +925,22 @@ jobs:
           test_args: ${{ inputs.go_test_args }}
           make_args: ${{ inputs.go_make_args }}
           coverage: 'true'
+
+      # go-test-action reaches setup-go itself and reports no version,
+      # so read the toolchain that ended up on PATH. Symmetric with
+      # the CLM lane, which takes setup-go's own output. Selecting the
+      # 'go' directive over 'toolchain' is silent (BRIEF.md D21), so
+      # without this there is nothing for a caller to check.
+      - name: 'Record resolved Go version'
+        id: go-version
+        if: inputs.build_type == 'go'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 'go version' prints e.g. 'go version go1.25.0 linux/amd64'.
+          version="$(go version | awk '{print $3}')"
+          echo "version=${version#go}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Go toolchain: ${version#go}"
 
       # no_checkout is 'true' because this workflow has already checked
       # out the code, and any pre-scan build has populated the

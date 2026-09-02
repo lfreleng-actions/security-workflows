@@ -393,6 +393,19 @@ on:
           redacts when it contains registered secrets.
         required: false
 
+    # Outputs exist so a caller -- including this repository's own
+    # self-test -- can assert on what the lane did, rather than infer
+    # it from the job having gone green. A scan that evaluated the
+    # wrong thing succeeds just as loudly as one that did not.
+    outputs:
+      go_version:
+        description: >-
+          The Go version setup-go installed for the pre-scan build,
+          resolved from the project's go.mod. Empty for every other
+          build_type. Reported so a caller can confirm the toolchain
+          the project asked for is the toolchain it got.
+        value: ${{ jobs.scan.outputs.go_version }}
+
 permissions: {}
 
 jobs:
@@ -554,6 +567,8 @@ jobs:
     needs: gerrit-validate
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      go_version: ${{ steps.setup-go.outputs.go-version }}
     permissions:
       # The workflow checks out the repository under analysis.
       contents: read
@@ -696,11 +711,14 @@ jobs:
       # step takes no version from build-metadata-action, whose
       # go_go_version output reports the 'go' directive alone.
       #
-      # Getting that wrong fails the build rather than degrading it:
-      # setup-go exports GOTOOLCHAIN=local, so Go refuses to fetch the
-      # toolchain the module asks for and stops with 'go.mod requires
-      # go >= X (running go Y; GOTOOLCHAIN=local)'.
+      # Getting that wrong degrades the build rather than failing it,
+      # which is why it went unnoticed: setup-go exports
+      # GOTOOLCHAIN=local, so Go does not fetch the toolchain the
+      # module asks for -- it simply builds on the version installed,
+      # exit 0, with nothing said. The scan then reports on a Go the
+      # project had deliberately moved away from. See BRIEF.md D21.
       - name: 'Setup Go'
+        id: setup-go
         if: inputs.build_type == 'go'
         # yamllint disable-line rule:line-length
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0

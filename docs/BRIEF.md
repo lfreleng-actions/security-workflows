@@ -568,10 +568,28 @@ file through `go-test-action`, and layers `go_version`/
 Those three behaviours combine badly. The CLM lane originally passed
 `build-metadata-action`'s `go_go_version` — documented as the `go`
 directive alone — as `go-version`, which suppressed the file and so
-the `toolchain` directive. With `GOTOOLCHAIN=local` set, Go will not
-fetch the toolchain the module asks for, so a project pinning one
-newer than its `go` directive failed the scan outright rather than
-building on an older Go.
+the `toolchain` directive.
+
+The consequence is a **silent downgrade**, not a failure. An earlier
+revision of this section claimed the scan failed outright with
+`go.mod requires go >= X (running go Y; GOTOOLCHAIN=local)`. That is
+wrong, and wrong in the direction that matters. Checked against Go
+1.24.3: a module declaring `go 1.23.0` and `toolchain go1.25.3`
+runs `go mod tidy` to completion under `GOTOOLCHAIN=local`, exit 0,
+silently ignoring the toolchain it asked for. The quoted error comes
+from the **`go`** directive being unsatisfied, and this code path
+could never produce it: `go_go_version` installs exactly that
+directive's version, so it is satisfied by construction.
+
+So the **CLM lane** built and scanned on the Go the project had
+deliberately moved away from, and reported success. Nexus IQ
+received a result; nothing indicated which toolchain produced it.
+The Sonar lane was never affected — it reached `setup-go` through
+`go-test-action`, which reads the file — so the defect was one lane
+wide, and that is exactly why it was worth recording rather than
+quietly repairing. That is the D12 hazard again rather than an
+outage, which makes the case for reading the file stronger, not
+weaker: a loud failure would at least have been noticed.
 
 So Go version selection is the one place the lanes do **not** reach
 for the shared metadata action. Issue #43 proposed the opposite —
@@ -590,9 +608,14 @@ lane through `go-test-action`, whose `go_version_file` defaults to
 comparison does not carry over, because `actions/setup-java` has no
 equivalent of reading the build file itself.
 
-Checked 2026-08 against `setup-go` v6.5.0 and v7.0.0 and
-`build-metadata-action` v0.8.0. No fixture in the organisation
-carries a `toolchain` directive, so nothing tests this; see #75.
+Checked 2026-08 against `setup-go` v6.5.0 and v7.0.0,
+`build-metadata-action` v0.8.0, and Go 1.24.3 for the runtime
+behaviour above. Both lanes now publish the Go version they
+resolved, and `testing.yaml` compares each against the fixture's
+`go.mod`: a mismatch, or a lane reporting no version, fails. No
+fixture carries a `toolchain` directive yet, so until one does the
+check warns and records the gap in the job summary rather than
+asserting an equality that cannot distinguish anything (#75).
 
 ### D22 — The build names the coverage it measured
 
