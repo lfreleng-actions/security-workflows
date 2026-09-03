@@ -472,9 +472,11 @@ SBOM. Both exist only because the legacy CLI release predates native
 Go SBOM support.
 
 The lane defaults to the CLI branch (`scan_mode: cli`): `go mod tidy`,
-then `scan_targets` resolves to `go.sum` whenever `build_type: go`,
-unconditionally and without a caller override — Go has no equivalent
-of `scan_targets` for a reason. `tidy` rather than `download` is
+then `scan_targets` resolves to a single resolved file whenever
+`build_type: go` rather than taking caller input — Go has no
+equivalent of `scan_targets` for a reason. That file was `go.sum`
+unconditionally when this lane shipped; D23 made it selectable and
+moved the default. `tidy` rather than `download` is
 deliberate and matches legacy: a scan job's checkout is never
 committed back, so mutating go.sum in place is safe, and a drifting
 go.sum should fail the scan rather than have a `download`-only step
@@ -638,6 +640,50 @@ surfaces that in the log and the job summary instead of letting the
 fallback publish a figure nobody chose. Both outcomes produce a
 coverage number, and a wrong one reads exactly like a right one —
 the D12 hazard in its coverage form.
+
+### D23 — The Go CLM scan reads what the build resolved
+
+Sonatype's Go Application Analysis page (last modified 18 February
+2026) ranks its two supported inputs: `go.list` "provides the most
+accurate results because it reflects the dependencies resolved by the
+Go tooling during build", while `go.sum` is "supported, but may
+include dependencies that are not used by the application". D20
+shipped `go.sum` because the Jenkins job it replaced used it. This
+lane now generates `go.list` by default, with `go_scan_target: 'sum'`
+kept for projects mid-cutover that need their old numbers to hold
+still.
+
+The difference is not theoretical. Against this repository's own Go
+fixture, `go.sum` names five modules and the build resolves four:
+`gopkg.in/check.v1` sits in the checksum file without ever being
+reached. Every finding against it would have been a finding about
+nothing the project ships.
+
+**`-test` is on, and that decision is the whole design.** Sonatype
+treats the flag as optional and writes the result to a differently
+named file. Taking that at face value here would have been a mistake:
+the same fixture reaches all four of its external modules only from
+`_test.go`, so the documented invocation produces a file with no
+modules in it whatsoever. Since `go.sum` has always carried test-only
+modules, defaulting to a target that drops them would have narrowed
+what CLM evaluates estate-wide while presenting as an accuracy
+improvement. Accuracy was the point; less coverage was not.
+
+The generated file is filtered before it is checked. The template
+emits an empty line per standard-library package, so an unfiltered
+run of that fixture yields a one-byte file of pure newline — which
+`[ -s ]` accepts, and which the CLI would scan as a project with no
+dependencies. Stripping blank lines first is what gives the emptiness
+check any meaning, and turns the D12 hazard into a failed job.
+
+Two consequences a caller should expect. `go list -compiled -deps`
+typechecks the project, which parsing `go.sum` never did, so a
+project that does not build now fails its scan instead of scanning a
+stale graph; `build_permit_fail` does not soften it, deliberately, as
+with the other Go steps. And `go mod tidy` no longer runs in this
+mode, because nothing reads `go.sum` there — `go list` resolves
+against the checked-in file and fails loudly if it is incomplete,
+which is the signal `tidy` would otherwise paper over.
 
 ### Legacy defects not carried forward
 

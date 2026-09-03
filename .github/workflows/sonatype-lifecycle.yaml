@@ -11,10 +11,11 @@
 # Gradle), an optional pre-scan build populates the workspace first via
 # the build_type input; the build runs inside the scan job so both share
 # a workspace without artefact plumbing. Go's build_type does not build
-# the project either -- it runs 'go mod tidy' so go.sum fully reflects
-# the dependency graph, then, per scan_mode, either scans go.sum
-# directly (the default, 'cli') or generates a CycloneDX SBOM with
-# cyclonedx-gomod and uploads it through the Nexus IQ REST API ('sbom').
+# the project either -- per scan_mode it either resolves the dependency
+# graph for the Nexus IQ CLI to scan (the default, 'cli', with
+# go_scan_target choosing between a generated go.list and a tidied
+# go.sum) or generates a CycloneDX SBOM with cyclonedx-gomod and
+# uploads it through the Nexus IQ REST API ('sbom').
 # Both mirror the two branches ONAP's legacy Jenkins Go CLM jobs picked
 # between via nexus-iq-use-cli; 'sbom' exists only for parity with
 # projects that ran that branch, since it forgoes the policy gating
@@ -256,6 +257,20 @@ on:
         required: false
         type: string
         default: 'cli'
+      go_scan_target:
+        description: >-
+          Which resolved file the Nexus IQ CLI scans for Go. 'list'
+          generates a go.list from the dependencies the Go tooling
+          actually resolves, which Sonatype documents as the most
+          accurate input; 'sum' scans the tidied go.sum, matching the
+          legacy Jenkins Go CLM jobs. Only used when build_type is 'go'
+          and scan_mode is 'cli'. Pin 'sum' while comparing results
+          against a Jenkins job this lane replaced: go.sum carries the
+          whole module graph including modules the build never
+          resolves, so the two targets do not evaluate the same set.
+        required: false
+        type: string
+        default: 'list'
       go_sbom_tool_version:
         description: >-
           cyclonedx-gomod version generating the SBOM. Only used when
@@ -519,6 +534,24 @@ jobs:
             exit 1
           fi
 
+      - name: 'Validate go_scan_target input'
+        shell: bash
+        env:
+          GO_SCAN_TARGET: ${{ inputs.go_scan_target }}
+        run: |
+          # Validated unconditionally, like build_type and scan_mode,
+          # even though only the Go CLI path reads it. The value also
+          # becomes part of the scan target's filename below, so an
+          # unrecognised one must not reach that expression.
+          case "${GO_SCAN_TARGET}" in
+            list | sum) ;;
+            *)
+              echo "::error::go_scan_target must be 'list' or 'sum'" \
+                "(received: '${GO_SCAN_TARGET}')"
+              exit 1
+              ;;
+          esac
+
       - name: 'Validate timeout_minutes input'
         shell: bash
         env:
@@ -729,12 +762,17 @@ jobs:
 
       # Nothing here compiles the project: 'go mod tidy' resolves and
       # prunes go.sum so it fully reflects the dependency graph before
-      # the scan reads it, either as the CLI's target directly ('cli')
-      # or as cyclonedx-gomod's input ('sbom'). No continue-on-error:
-      # a failed tidy leaves go.sum stale or incomplete, and scanning
-      # that would be worse than failing outright.
+      # the scan reads it, either as the CLI's target directly
+      # (go_scan_target 'sum') or as cyclonedx-gomod's input ('sbom').
+      # The go.list path reads neither, resolving through 'go list'
+      # instead, so tidy is skipped there rather than left able to fail
+      # for no benefit. No continue-on-error: a failed tidy leaves
+      # go.sum stale or incomplete, and scanning that would be worse
+      # than failing outright.
       - name: 'Go mod tidy'
-        if: inputs.build_type == 'go'
+        if: >-
+          inputs.build_type == 'go' &&
+          (inputs.scan_mode != 'cli' || inputs.go_scan_target != 'list')
         shell: bash
         working-directory: ${{ inputs.path_prefix }}
         run: |
@@ -747,9 +785,53 @@ jobs:
             exit 1
           fi
 
-      # Only scan_mode: 'sbom' needs an SBOM; 'cli' scans go.sum
-      # directly. Version-pinned rather than @latest, unlike the legacy
-      # Jenkins script, per this repository's pinning policy for
+      # scan_mode 'cli' with go_scan_target 'list'. The -f template is
+      # Sonatype's, verbatim from the Go Application Analysis page; a
+      # quoted heredoc keeps its braces, quotes and embedded newlines
+      # intact, which inlining a multi-line Go template in YAML does
+      # not. No continue-on-error, matching the two steps around it.
+      #
+      # '-test' is deliberate, and the docs present it as optional.
+      # go.sum -- the target this replaces -- has always carried
+      # test-only modules, so omitting it would quietly narrow what CLM
+      # evaluates rather than merely sharpen it. This repository's own
+      # Go fixture makes the case: every external module it depends on
+      # is reached only from _test.go, so without '-test' the file
+      # comes out empty.
+      #
+      # The template emits a blank line for each standard-library
+      # package, so strip those before the guard. A file of nothing but
+      # newlines is not empty to '-s', and would scan as though the
+      # project had no dependencies at all -- the D12 hazard, where a
+      # green scan has evaluated nothing.
+      - name: 'Generate Go list'
+        if: >-
+          inputs.build_type == 'go' && inputs.scan_mode == 'cli' &&
+          inputs.go_scan_target == 'list'
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        run: |
+          template="$(cat <<'TEMPLATE'
+          {{define "M"}}{{.Path}} {{.Version}}{{end}}{{with .Module}}
+          {{if not .Main}}{{if .Replace}}{{template "M" .Replace}}
+          {{else}}{{template "M" .}}{{end}}{{end}}{{end}}
+          TEMPLATE
+          )"
+          go list -f "${template}" -compiled -deps -test ./... \
+            | sort -u | sed '/^$/d' > go.list
+          if [ ! -s go.list ]; then
+            echo "::error::go.list is empty: 'go list' resolved no" \
+              "module dependencies. Either the project depends on" \
+              "nothing outside the standard library, or resolution" \
+              "produced nothing to scan. Set go_scan_target: 'sum' to" \
+              "scan go.sum instead."
+            exit 1
+          fi
+          echo "Modules resolved for the scan: $(wc -l < go.list)"
+
+      # Only scan_mode: 'sbom' needs an SBOM; 'cli' scans go.list or
+      # go.sum directly. Version-pinned rather than @latest, unlike the
+      # legacy Jenkins script, per this repository's pinning policy for
       # anything a lane installs and runs. No continue-on-error, to
       # match 'Go mod tidy' above: a failed generation should not fall
       # through to uploading a missing or stale bom.xml.
@@ -846,11 +928,12 @@ jobs:
           java_version: ${{ inputs.iq_java_version }}
           iq_cli_version: ${{ inputs.iq_cli_version }}
           application_id: ${{ steps.application.outputs.id }}
-          # The Go path always scans go.sum rather than the source
-          # tree; scan_targets is a Maven/Gradle/none concern there, so
-          # it takes no caller input for Go.
+          # The Go path scans one resolved file rather than the source
+          # tree -- go.list or go.sum, per go_scan_target -- so
+          # scan_targets is a Maven/Gradle/none concern there, and it
+          # takes no caller input for Go.
           # yamllint disable-line rule:line-length
-          scan_targets: ${{ inputs.build_type == 'go' && format('{0}/go.sum', inputs.path_prefix) || inputs.scan_targets }}
+          scan_targets: ${{ inputs.build_type == 'go' && format('{0}/go.{1}', inputs.path_prefix, inputs.go_scan_target) || inputs.scan_targets }}
           advanced_properties: ${{ inputs.advanced_properties }}
           ignore_scanning_errors: ${{ inputs.ignore_scanning_errors }}
           ignore_system_errors: ${{ inputs.ignore_system_errors }}
