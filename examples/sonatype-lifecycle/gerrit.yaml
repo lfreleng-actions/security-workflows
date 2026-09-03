@@ -192,20 +192,32 @@ jobs:
       #
       #   build_type: 'go'
       #   scan_mode: 'cli'
+      #   go_scan_target: 'list'
       #
-      # 'cli' is the lane default and the right choice for a new
-      # project: the Nexus IQ CLI scans go.sum and returns a policy
-      # verdict the job can fail on.
+      # Both are lane defaults and the right choice for a new project:
+      # the Nexus IQ CLI scans a go.list built from the dependencies
+      # the Go tooling resolves, and returns a policy verdict the job
+      # can fail on.
       #
-      # MIGRATING OFF gerrit-nexus-iq-go-clm: that Jenkins job had two
-      # branches, and a project that ran the REST one
-      # (nexus-iq-use-cli: false) needs scan_mode: 'sbom' to reproduce
-      # it -- a cyclonedx-gomod SBOM POSTed to the Nexus IQ REST API,
-      # evaluated asynchronously and so with no verdict to gate on.
-      # Pin whichever branch the project ran EXPLICITLY for the
-      # cutover: the two modes do not evaluate the same thing, and
-      # taking the default silently changes the results the before and
-      # after comparison rests on. Move to 'cli' once that is done.
+      # MIGRATING OFF gerrit-nexus-iq-go-clm: pin BOTH inputs
+      # explicitly for the cutover, because that Jenkins job differs
+      # from the defaults on each of them, and taking a default
+      # silently changes the results the before-and-after comparison
+      # rests on.
+      #
+      #   scan_mode -- the job had two branches. A project that ran the
+      #   REST one (nexus-iq-use-cli: false) needs scan_mode: 'sbom' to
+      #   reproduce it: a cyclonedx-gomod SBOM POSTed to the Nexus IQ
+      #   REST API, evaluated asynchronously and so with no verdict to
+      #   gate on. A project that ran the CLI branch wants 'cli'.
+      #
+      #   go_scan_target -- the CLI branch scanned go.sum, so parity
+      #   needs go_scan_target: 'sum'. go.sum carries the whole module
+      #   graph, including modules the build never resolves, so 'list'
+      #   legitimately reports fewer findings. Expect that difference
+      #   rather than reading it as coverage lost.
+      #
+      # Move to the defaults once the comparison is signed off.
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
       maven_server_password: ${{ secrets.NEXUS_PASSWORD }}
