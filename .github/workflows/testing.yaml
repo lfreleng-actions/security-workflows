@@ -375,6 +375,73 @@ jobs:
           echo "Forwarded coverage report paths: ${PATHS}"
           echo 'Aggregate coverage measured and forwarded ✅'
 
+  # The other half of #77, and the one that needed the scan action to
+  # report what it used. The job above proves the build measured
+  # coverage; this proves the value reached the analysis.
+  #
+  # CLI mode is the mode that matters. sonar-maven-plugin derives
+  # report paths from the project model, so a Maven-mode scan finds
+  # coverage whether or not the lane forwards anything; the Scanner
+  # CLI has no model and takes what it is given. Deleting the
+  # coverage_report_paths line from the lane turns this job red and
+  # leaves every other leg green.
+  assert-coverage-forwarded:
+    name: 'Assert (coverage forwarding)'
+    needs: sonarqube-cloud-maven-cli
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+      - name: 'Require the paths to appear in the scan arguments'
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          EXPECTED: ${{ needs.sonarqube-cloud-maven-cli.outputs.coverage_report_paths }}
+          # yamllint disable-line rule:line-length
+          ARGS: ${{ needs.sonarqube-cloud-maven-cli.outputs.scanner_args }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${EXPECTED}" ]; then
+            echo "::error::The Maven build measured no aggregate" \
+              "JaCoCo coverage, so there is nothing to check the" \
+              "forwarding against."
+            exit 1
+          fi
+          if [ -z "${ARGS}" ]; then
+            echo "::error::The scan reported no arguments. Check the" \
+              "pinned sonarqube-cloud-scan-action still publishes" \
+              "scanner_args (added in v1.6.0)."
+            exit 1
+          fi
+
+          echo "Build measured:  ${EXPECTED}"
+          echo "Scan received:   ${ARGS}"
+
+          # Pad both sides so the pattern matches a WHOLE argument.
+          # Without the trailing space, a shorter EXPECTED would also
+          # match a longer path that merely starts with it.
+          # yamllint disable rule:line-length
+          case " ${ARGS} " in
+            *" -Dsonar.coverage.jacoco.xmlReportPaths=${EXPECTED} "*)
+              echo 'Coverage paths reached the analysis ✅'
+              ;;
+            *)
+              echo "::error::The build measured coverage but the" \
+                "analysis was not told about it. The lane's" \
+                "coverage_report_paths wiring is broken: a CLI-mode" \
+                "scan then reports whatever its own discovery finds," \
+                "which succeeds and looks identical."
+              exit 1
+              ;;
+          esac
+          # yamllint enable rule:line-length
+
   # go.mod carries two version directives and 'toolchain' outranks
   # 'go'. Passing a version as setup-go's go-version suppresses the
   # file, and so the toolchain directive, and the build then runs and
