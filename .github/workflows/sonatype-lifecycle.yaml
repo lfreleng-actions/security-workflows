@@ -244,8 +244,9 @@ on:
       scan_mode:
         description: >-
           How results reach Nexus IQ: 'cli' runs the Nexus IQ CLI's
-          build analyser against scan_targets (or go.sum for Go).
-          'sbom' instead generates a CycloneDX SBOM and uploads it
+          build analyser against scan_targets (or, for Go, the file
+          go_scan_target names). 'sbom' instead generates a CycloneDX
+          SBOM and uploads it
           through the Nexus IQ REST API directly, bypassing the CLI
           entirely -- mirroring legacy Jenkins Go CLM jobs with
           nexus-iq-use-cli: false. Only the Go path drives 'sbom'
@@ -764,9 +765,11 @@ jobs:
       # prunes go.sum so it fully reflects the dependency graph before
       # the scan reads it, either as the CLI's target directly
       # (go_scan_target 'sum') or as cyclonedx-gomod's input ('sbom').
-      # The go.list path reads neither, resolving through 'go list'
+      # The go.list path consumes neither, resolving through 'go list'
       # instead, so tidy is skipped there rather than left able to fail
-      # for no benefit. No continue-on-error: a failed tidy leaves
+      # for no benefit. That path still reads go.sum -- 'go list'
+      # verifies checksums as it resolves -- it just never analyses it.
+      # No continue-on-error: a failed tidy leaves
       # go.sum stale or incomplete, and scanning that would be worse
       # than failing outright.
       - name: 'Go mod tidy'
@@ -821,10 +824,11 @@ jobs:
             | sort -u | sed '/^$/d' > go.list
           if [ ! -s go.list ]; then
             echo "::error::go.list is empty: 'go list' resolved no" \
-              "module dependencies. Either the project depends on" \
-              "nothing outside the standard library, or resolution" \
-              "produced nothing to scan. Set go_scan_target: 'sum' to" \
-              "scan go.sum instead."
+              "module dependencies, so there is nothing to scan. A" \
+              "project depending on nothing outside the standard" \
+              "library has nothing for Nexus IQ to evaluate by either" \
+              "target. Where go.sum lists modules the build never" \
+              "reaches, go_scan_target: 'sum' scans those instead."
             exit 1
           fi
           echo "Modules resolved for the scan: $(wc -l < go.list)"

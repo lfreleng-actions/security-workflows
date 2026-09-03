@@ -40,12 +40,13 @@ jobs:
     #   build_type: 'none'          # 'maven', 'gradle' or 'go' to build first
     #   java_version: ''            # build JDK; empty auto-detects
     #   iq_java_version: '17'       # Nexus IQ CLI runtime JDK
-    #   scan_mode: 'cli'            # 'cli' scans a file the build resolved;
-    #                               # 'sbom' uploads a cyclonedx-gomod SBOM
-    #                               # instead (Go only)
-    #   go_scan_target: 'list'      # 'list' generates go.list from what the
-    #                               # build resolves; 'sum' scans the tidied
-    #                               # go.sum (legacy Jenkins parity)
+    #   scan_mode: 'cli'            # 'cli' runs the Nexus IQ CLI over
+    #                               # scan_targets; 'sbom' uploads a
+    #                               # cyclonedx-gomod SBOM instead (Go only)
+    #   go_scan_target: 'list'      # Go + 'cli' only: 'list' generates
+    #                               # go.list from what the build resolves;
+    #                               # 'sum' scans the tidied go.sum (legacy
+    #                               # Jenkins parity)
     #   scan_targets: '.'           # file(s)/folder(s); ignored for 'go',
     #                               # which scans go.list, go.sum or an SBOM
     #   harden_runner_egress: 'block'

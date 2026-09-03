@@ -471,12 +471,17 @@ Nexus IQ CLI's build analyser at `go.sum`; the REST API branch (what
 SBOM. Both exist only because the legacy CLI release predates native
 Go SBOM support.
 
-The lane defaults to the CLI branch (`scan_mode: cli`): `go mod tidy`,
-then `scan_targets` resolves to a single resolved file whenever
+The lane defaults to the CLI branch (`scan_mode: cli`), where
+`scan_targets` resolves to a single resolved file whenever
 `build_type: go` rather than taking caller input — Go has no
 equivalent of `scan_targets` for a reason. That file was `go.sum`
 unconditionally when this lane shipped; D23 made it selectable and
-moved the default. `tidy` rather than `download` is
+moved the default, and `go mod tidy` now runs only on the paths that
+analyse `go.sum` — `go_scan_target: sum` and `sbom` mode. The
+`go.list` path still reads it, since `go list` verifies checksums
+while resolving; it simply never analyses it, so tidying it there
+would buy nothing. Where tidy runs,
+`tidy` rather than `download` is
 deliberate and matches legacy: a scan job's checkout is never
 committed back, so mutating go.sum in place is safe, and a drifting
 go.sum should fail the scan rather than have a `download`-only step
@@ -538,11 +543,9 @@ SBOM route for Go at all, recommends a `go.list` file from
 used by the application". That is a stronger version of the argument
 this section already made: the vendor has not just stopped needing
 the SBOM route for Go, it has stopped recommending it entirely, which
-is further reason for `sbom` to stay the exception. Whether to adopt
-`go.list` as the `cli`-mode scan target is tracked separately
-(issue #41): it would change the migrated `policy-opa-pdp` job's
-results from the Jenkins job it replaces, which is a decision for
-whoever owns that migration rather than this record.
+is further reason for `sbom` to stay the exception. `go.list` has
+since become the `cli`-mode default; D23 records that change and why
+the migration argument raised here no longer blocks it.
 
 [go-app-analysis]: https://help.sonatype.com/en/go-application-analysis.html
 
@@ -676,14 +679,36 @@ run of that fixture yields a one-byte file of pure newline — which
 dependencies. Stripping blank lines first is what gives the emptiness
 check any meaning, and turns the D12 hazard into a failed job.
 
-Two consequences a caller should expect. `go list -compiled -deps`
-typechecks the project, which parsing `go.sum` never did, so a
-project that does not build now fails its scan instead of scanning a
-stale graph; `build_permit_fail` does not soften it, deliberately, as
-with the other Go steps. And `go mod tidy` no longer runs in this
-mode, because nothing reads `go.sum` there — `go list` resolves
-against the checked-in file and fails loudly if it is incomplete,
-which is the signal `tidy` would otherwise paper over.
+Two consequences a caller should expect. The first is that `go.sum`
+still matters on this path even though nothing analyses it: `go list`
+verifies checksums while resolving, so an incomplete file fails the
+step rather than being rewritten — verified on the fixture, exit 1
+with `missing go.sum entry` and the file left untouched. That is the
+drift signal `go mod tidy` would otherwise have provided, which is
+what makes skipping tidy here safe rather than merely convenient.
+
+That behaviour is `-mod=readonly`, the default since Go 1.16, and the
+lane does not pass the flag explicitly. Two configurations fall
+outside what was tested. A module declaring a `go` directive below
+1.16 gets a toolchain that could still write to `go.sum`. A module
+with a `vendor/` directory selects `-mod=vendor` instead, where
+resolution comes from `vendor/modules.txt` and checksums are not
+consulted at all — inconsistency there fails differently rather than
+not failing. Forcing `-mod=readonly` would make the guarantee
+unconditional at the cost of breaking vendored projects, which is a
+separate decision with its own consumers to find first.
+
+What `go list` does **not** do is type-check. It loads and resolves
+packages, so it fails on parse errors, unresolvable imports and the
+missing checksums above, but function bodies are never compiled:
+against the fixture, a deliberate type error makes `go build` exit 1
+while `go list -compiled -deps -test` exits 0 and emits the full
+module set. `-compiled` populates package metadata and does not imply
+otherwise. Issue #41 assumed the opposite when weighing this change,
+and so did an earlier draft of this entry. The correction is in the
+change's favour: adopting `go.list` adds a narrower failure surface
+than the issue feared, and `build_permit_fail` does not soften what
+remains, deliberately, as with the other Go steps.
 
 ### Legacy defects not carried forward
 
