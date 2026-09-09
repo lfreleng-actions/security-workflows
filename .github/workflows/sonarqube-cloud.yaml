@@ -511,6 +511,15 @@ on:
           other build_type, and empty when the build produced no
           aggregate report.
         value: ${{ jobs.scan.outputs.coverage_report_paths }}
+      scanner_args:
+        description: >-
+          The -Dsonar.* properties the scan action derived from its
+          own inputs and handed to the analysis, as reported by
+          sonarqube-cloud-scan-action. Carries the coverage report
+          paths this lane forwarded, so a caller can confirm they
+          reached the scan rather than infer it from the job passing.
+          Excludes the scan action's free-form 'args', by its design.
+        value: ${{ jobs.scan.outputs.scanner_args }}
       go_version:
         description: >-
           The Go version the pre-scan test run actually used, read
@@ -737,6 +746,7 @@ jobs:
       # yamllint disable-line rule:line-length
       coverage_report_paths: ${{ steps.maven-build.outputs.coverage_report_paths }}
       go_version: ${{ steps.go-version.outputs.version }}
+      scanner_args: ${{ steps.sonar-scan.outputs.scanner_args }}
     permissions:
       # The workflow checks out the repository under analysis. Results
       # go to SonarQube Cloud over the network, not to GitHub code
@@ -1014,8 +1024,9 @@ jobs:
       # else gets the Scanner CLI. See the input's own comment for why
       # the two are not interchangeable.
       - name: 'SonarQube Cloud scan'
+        id: sonar-scan
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/sonarqube-cloud-scan-action@c8c342bf621f6e7e8622b12a19fa3539a6237f3c  # v1.5.0
+        uses: lfreleng-actions/sonarqube-cloud-scan-action@bf84abc8e7e69217c2a65e2fcdb6338d080200d9  # v1.6.0
         with:
           sonar_token: ${{ secrets.sonar_token }}
           no_checkout: 'true'
