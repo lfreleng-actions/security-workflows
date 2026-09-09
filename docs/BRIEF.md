@@ -471,10 +471,17 @@ Nexus IQ CLI's build analyser at `go.sum`; the REST API branch (what
 SBOM. Both exist only because the legacy CLI release predates native
 Go SBOM support.
 
-The lane defaults to the CLI branch (`scan_mode: cli`): `go mod tidy`,
-then `scan_targets` resolves to `go.sum` whenever `build_type: go`,
-unconditionally and without a caller override — Go has no equivalent
-of `scan_targets` for a reason. `tidy` rather than `download` is
+The lane defaults to the CLI branch (`scan_mode: cli`), where
+`scan_targets` resolves to a single resolved file whenever
+`build_type: go` rather than taking caller input — Go has no
+equivalent of `scan_targets` for a reason. That file was `go.sum`
+unconditionally when this lane shipped; D23 made it selectable and
+moved the default, and `go mod tidy` now runs only on the paths that
+analyse `go.sum` — `go_scan_target: sum` and `sbom` mode. The
+`go.list` path still reads it, since `go list` verifies checksums
+while resolving; it simply never analyses it, so tidying it there
+would buy nothing. Where tidy runs,
+`tidy` rather than `download` is
 deliberate and matches legacy: a scan job's checkout is never
 committed back, so mutating go.sum in place is safe, and a drifting
 go.sum should fail the scan rather than have a `download`-only step
@@ -536,11 +543,9 @@ SBOM route for Go at all, recommends a `go.list` file from
 used by the application". That is a stronger version of the argument
 this section already made: the vendor has not just stopped needing
 the SBOM route for Go, it has stopped recommending it entirely, which
-is further reason for `sbom` to stay the exception. Whether to adopt
-`go.list` as the `cli`-mode scan target is tracked separately
-(issue #41): it would change the migrated `policy-opa-pdp` job's
-results from the Jenkins job it replaces, which is a decision for
-whoever owns that migration rather than this record.
+is further reason for `sbom` to stay the exception. `go.list` has
+since become the `cli`-mode default; D23 records that change and why
+the migration argument raised here no longer blocks it.
 
 [go-app-analysis]: https://help.sonatype.com/en/go-application-analysis.html
 
@@ -638,6 +643,72 @@ surfaces that in the log and the job summary instead of letting the
 fallback publish a figure nobody chose. Both outcomes produce a
 coverage number, and a wrong one reads exactly like a right one —
 the D12 hazard in its coverage form.
+
+### D23 — The Go CLM scan reads what the build resolved
+
+Sonatype's Go Application Analysis page (last modified 18 February
+2026) ranks its two supported inputs: `go.list` "provides the most
+accurate results because it reflects the dependencies resolved by the
+Go tooling during build", while `go.sum` is "supported, but may
+include dependencies that are not used by the application". D20
+shipped `go.sum` because the Jenkins job it replaced used it. This
+lane now generates `go.list` by default, with `go_scan_target: 'sum'`
+kept for projects mid-cutover that need their old numbers to hold
+still.
+
+The difference is not theoretical. Against this repository's own Go
+fixture, `go.sum` names five modules and the build resolves four:
+`gopkg.in/check.v1` sits in the checksum file without ever being
+reached. Every finding against it would have been a finding about
+nothing the project ships.
+
+**`-test` is on, and that decision is the whole design.** Sonatype
+treats the flag as optional and writes the result to a differently
+named file. Taking that at face value here would have been a mistake:
+the same fixture reaches all four of its external modules only from
+`_test.go`, so the documented invocation produces a file with no
+modules in it whatsoever. Since `go.sum` has always carried test-only
+modules, defaulting to a target that drops them would have narrowed
+what CLM evaluates estate-wide while presenting as an accuracy
+improvement. Accuracy was the point; less coverage was not.
+
+The generated file is filtered before it is checked. The template
+emits an empty line per standard-library package, so an unfiltered
+run of that fixture yields a one-byte file of pure newline — which
+`[ -s ]` accepts, and which the CLI would scan as a project with no
+dependencies. Stripping blank lines first is what gives the emptiness
+check any meaning, and turns the D12 hazard into a failed job.
+
+Two consequences a caller should expect. The first is that `go.sum`
+still matters on this path even though nothing analyses it: `go list`
+verifies checksums while resolving, so an incomplete file fails the
+step rather than being rewritten — verified on the fixture, exit 1
+with `missing go.sum entry` and the file left untouched. That is the
+drift signal `go mod tidy` would otherwise have provided, which is
+what makes skipping tidy here safe rather than merely convenient.
+
+That behaviour is `-mod=readonly`, the default since Go 1.16, and the
+lane does not pass the flag explicitly. Two configurations fall
+outside what was tested. A module declaring a `go` directive below
+1.16 gets a toolchain that could still write to `go.sum`. A module
+with a `vendor/` directory selects `-mod=vendor` instead, where
+resolution comes from `vendor/modules.txt` and checksums are not
+consulted at all — inconsistency there fails differently rather than
+not failing. Forcing `-mod=readonly` would make the guarantee
+unconditional at the cost of breaking vendored projects, which is a
+separate decision with its own consumers to find first.
+
+What `go list` does **not** do is type-check. It loads and resolves
+packages, so it fails on parse errors, unresolvable imports and the
+missing checksums above, but function bodies are never compiled:
+against the fixture, a deliberate type error makes `go build` exit 1
+while `go list -compiled -deps -test` exits 0 and emits the full
+module set. `-compiled` populates package metadata and does not imply
+otherwise. Issue #41 assumed the opposite when weighing this change,
+and so did an earlier draft of this entry. The correction is in the
+change's favour: adopting `go.list` adds a narrower failure surface
+than the issue feared, and `build_permit_fail` does not soften what
+remains, deliberately, as with the other Go steps.
 
 ### Legacy defects not carried forward
 

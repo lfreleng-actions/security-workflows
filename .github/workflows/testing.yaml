@@ -81,10 +81,13 @@ jobs:
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
 
-  # Cover the Go path: 'go mod tidy' resolves go.sum, then the scan
-  # targets go.sum directly rather than the source tree. Audit egress
-  # because module downloads reach proxy.golang.org, beyond the
-  # allow-listed toolchain set.
+  # Cover the Go path: with go_scan_target at its 'list' default, the
+  # lane generates go.list from the dependencies the build resolves
+  # and points the scan at that file rather than the source tree. No
+  # 'go mod tidy' runs here. go.sum still matters -- 'go list' verifies
+  # checksums against it while resolving -- but it is neither tidied
+  # nor analysed. Audit egress because module downloads reach
+  # proxy.golang.org, beyond the allow-listed toolchain set.
   # Resolve the Go fixture to one commit, up front. The Go legs and
   # the assertion below each check the fixture out independently, so
   # on a moving default branch they could read different trees: the
@@ -135,14 +138,41 @@ jobs:
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
 
+  # The job above takes the go_scan_target default, so it covers the
+  # go.list path only. This one covers the legacy-parity path a project
+  # mid-cutover pins: a different scan target filename, and the branch
+  # where 'Go mod tidy' still runs. Both are conditional, so neither is
+  # exercised by the default leg.
+  #
+  # Chained rather than parallel: every Go leg scans the same derived
+  # Nexus IQ application, and the job above is what registers it.
+  sonatype-lifecycle-go-sum:
+    name: 'Sonatype Lifecycle (Go, go.sum)'
+    needs: [go-fixture-ref, sonatype-lifecycle-go]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-go-project'
+      ref: ${{ needs.go-fixture-ref.outputs.sha }}
+      build_type: 'go'
+      go_scan_target: 'sum'
+      build_permit_egress_traffic: true
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
   # Cover the Go REST-API path: generates a cyclonedx-gomod SBOM and
   # uploads it directly instead of running the CLI scan action. Relies
   # on the same fixture already having an application registered in
-  # Nexus IQ from the 'cli' job above; the lookup step fails fast with
+  # Nexus IQ from the 'cli' jobs above; the lookup step fails fast with
   # a clear error otherwise, rather than the API silently creating one.
+  #
+  # Last in the Go chain, not merely after the first leg: the upload is
+  # asynchronous, so letting it run alongside another scan of the same
+  # application would interleave results for no gain.
   sonatype-lifecycle-go-sbom:
     name: 'Sonatype Lifecycle (Go, REST API)'
-    needs: [go-fixture-ref, sonatype-lifecycle-go]
+    needs: [go-fixture-ref, sonatype-lifecycle-go-sum]
     permissions:
       contents: read
     uses: ./.github/workflows/sonatype-lifecycle.yaml
