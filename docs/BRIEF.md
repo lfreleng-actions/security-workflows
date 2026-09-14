@@ -777,7 +777,17 @@ against each repository's default branch.
   than a scan workflow. The two jobs that do run a pre-scan script,
   both in O-RAN-SC, use `PRE_BUILD_SCRIPT_URL` pointing into
   `o-ran-sc/ci-management` — which the lane keeps as
-  `prescan_script_url`.
+  `prescan_script_url`. Restored as `prescan_script_path`, not
+  because anything was stranded but because those two URLs name
+  `refs/heads/master` of another repository: content that can change
+  after review, which is the property pinning exists to remove. The
+  inline form stays dropped and should: a script body arriving as an
+  input is a template-injection vector, where one checked into the
+  repository under review passes the same review as the change it
+  accompanies. The lane runs it rather than forwarding it, so the
+  script executed is the one the lane checked out, and containment
+  inside `GITHUB_WORKSPACE` is resolved against the real tree — a
+  symlink leaving the checkout fails the job.
 - **`OP_SECRET_REFERENCE`** is likewise set by no caller. The name
   occurs only in `reuse-sonatype-lifecycle.yaml`, which declares it.
 - **`MVN_POM_FILE`** is set by two callers, in four jobs, and every

@@ -20,7 +20,8 @@
 # wraps the build rather than running beside it, so it belongs to the
 # scan action (build_wrapper_url) and not to build_type. Projects that
 # need some other pre-scan step, and whose language is not one of the
-# build_type options, can point prescan_script_url at a script.
+# build_type options, can point prescan_script_url at a script, or
+# prescan_script_path at one checked into the repository under review.
 #
 # Nothing organisation-specific lives in this lane. The Sonar host,
 # organisation and project key are all caller-supplied, and the Maven
@@ -225,6 +226,21 @@ on:
           scan, WITHOUT the C/C++ build wrapper. Use for languages that
           need a pre-scan step, such as generating a coverage report,
           that build_type does not cover.
+        required: false
+        type: string
+        default: ''
+      prescan_script_path:
+        description: >-
+          Path, relative to path_prefix, of a script checked into the
+          repository under review, run after checkout and before the
+          scan. Same purpose as prescan_script_url without fetching
+          from elsewhere: the script arrives through the same code
+          review as the change it accompanies, where an HTTPS URL to a
+          branch names content that can move after review. Mutually
+          exclusive with prescan_script_url, build_wrapper_url and any
+          build_type other than 'none'. Runs with bash, so it needs no
+          execute bit, and resolves inside the workspace or the job
+          fails.
         required: false
         type: string
         default: ''
@@ -691,26 +707,43 @@ jobs:
           BUILD_TYPE: ${{ inputs.build_type }}
           BUILD_WRAPPER_URL: ${{ inputs.build_wrapper_url }}
           PRESCAN_SCRIPT_URL: ${{ inputs.prescan_script_url }}
+          PRESCAN_SCRIPT_PATH: ${{ inputs.prescan_script_path }}
         run: |
           # Each of these populates the workspace before the scan, and
           # combining them means building twice with the second run
           # overwriting the first. The scan action rejects the
           # wrapper/prescan pair itself, but only once the job has
-          # already checked out and hardened, so check here too.
-          if [ -n "${BUILD_WRAPPER_URL}" ] \
-            && [ -n "${PRESCAN_SCRIPT_URL}" ]; then
-            echo "::error::build_wrapper_url and prescan_script_url" \
-              "are mutually exclusive"
+          # already checked out and hardened, so check here too. It
+          # knows nothing of prescan_script_path, which this lane runs
+          # rather than forwarding, so that pairing is ours alone.
+          hooks=0
+          for hook in "${BUILD_WRAPPER_URL}" "${PRESCAN_SCRIPT_URL}" \
+            "${PRESCAN_SCRIPT_PATH}"; do
+            [ -n "${hook}" ] && hooks=$((hooks + 1))
+          done
+          if [ "${hooks}" -gt 1 ]; then
+            echo "::error::build_wrapper_url, prescan_script_url and" \
+              "prescan_script_path are mutually exclusive"
             exit 1
           fi
-          if [ "${BUILD_TYPE}" != 'none' ]; then
-            if [ -n "${BUILD_WRAPPER_URL}" ] \
-              || [ -n "${PRESCAN_SCRIPT_URL}" ]; then
-              echo "::error::build_type '${BUILD_TYPE}' cannot combine" \
-                "with build_wrapper_url or prescan_script_url"
-              exit 1
-            fi
+          if [ "${BUILD_TYPE}" != 'none' ] && [ "${hooks}" -gt 0 ]; then
+            echo "::error::build_type '${BUILD_TYPE}' cannot combine" \
+              "with build_wrapper_url, prescan_script_url or" \
+              "prescan_script_path"
+            exit 1
           fi
+          # Containment is confirmed against the real tree after
+          # checkout; this only rejects shapes that could never be
+          # workspace-relative, so a caller learns before the job runs.
+          case "${PRESCAN_SCRIPT_PATH}" in
+            '') ;;
+            /* | *..*)
+              echo "::error::prescan_script_path must be relative to" \
+                "path_prefix, without '..' segments (received:" \
+                "'${PRESCAN_SCRIPT_PATH}')"
+              exit 1
+              ;;
+          esac
 
       - name: 'Validate quality gate inputs'
         if: inputs.fail_on_quality_gate
@@ -1060,6 +1093,59 @@ jobs:
           echo "args=${args} --global-settings ${settings_file}" \
             >> "$GITHUB_OUTPUT"
           echo "Maven settings provided to the scan: ${settings_file}"
+
+      # A script already in the repository under review is not the
+      # injection vector an inline script body would be: it arrives
+      # through the same code review as the change it accompanies, and
+      # the job has already checked it out. It is also no new trust
+      # boundary, because every build_type other than 'none' already
+      # runs the project's own build in this job.
+      #
+      # The URL form fetches from elsewhere, and both O-RAN-SC callers
+      # that use it point at refs/heads/master of another repository --
+      # content that can change after review, which is what pinning
+      # exists to prevent. This path closes that gap for projects able
+      # to keep the script beside the code it prepares.
+      #
+      # Run by the lane rather than forwarded, unlike
+      # prescan_script_url: the lane owns the checkout, so the script
+      # it runs is the one reviewed, and no second repository has to
+      # learn about it. Containment resolves here rather than in the
+      # validate job because only here does the tree exist.
+      - name: 'Run pre-scan script'
+        if: inputs.prescan_script_path != ''
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        env:
+          PRESCAN_SCRIPT_PATH: ${{ inputs.prescan_script_path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PRESCAN_SCRIPT_PATH}" ]; then
+            echo "::error::prescan_script_path names no file:" \
+              "${PRESCAN_SCRIPT_PATH} (relative to path_prefix)"
+            exit 1
+          fi
+
+          # realpath follows symlinks, so this rejects a link pointing
+          # out of the checkout as well as a traversing path. The
+          # slash in the pattern keeps out a sibling directory whose
+          # name merely starts with the workspace path.
+          script="$(realpath -e -- "${PRESCAN_SCRIPT_PATH}")"
+          workspace="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          case "${script}" in
+            "${workspace}"/*) ;;
+            *)
+              echo "::error::prescan_script_path resolves outside the" \
+                "workspace: ${script}"
+              exit 1
+              ;;
+          esac
+
+          echo "Running pre-scan script: ${script}"
+          # Invoked through bash so the file needs no execute bit,
+          # which a checkout made on Windows may not carry.
+          bash "${script}"
 
       # no_checkout is 'true' because this workflow has already checked
       # out the code, and any pre-scan build has populated the
