@@ -786,7 +786,14 @@ against each repository's default branch.
   `datafilecollector/pom.xml` in `o-ran-sc/nonrtric-plt-ranpm`. The
   directory varies; the filename never does. `path_prefix` already
   selects the directory, so nothing in the estate needs the
-  non-standard filename this input existed to permit.
+  non-standard filename this input existed to permit. Restored
+  anyway, as `mvn_pom_file` on both lanes: `maven-build-action`
+  already accepted it, so the gap was plumbing rather than
+  capability, and leaving a lane unable to express something the
+  action beneath it can costs more to explain than to fix. The Sonar
+  lane passes the same value to `sonar-maven-plugin` as `-f`, since
+  naming a POM for the build alone would analyse a different module
+  set than the one just built.
 - **`ENV_SECRETS`** is the literal `"{}"` everywhere it appears in the
   sample. No scan caller puts a secret into the build environment, so
   the third-party environment-splatting action has no requirement

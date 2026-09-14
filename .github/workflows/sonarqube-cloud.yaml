@@ -302,6 +302,18 @@ on:
         required: false
         type: string
         default: ''
+      mvn_pom_file:
+        description: >-
+          POM file to build and analyse, relative to path_prefix, for
+          projects whose root POM is not called pom.xml. Empty leaves
+          Maven's own default. Both the build and sonar-maven-plugin
+          run from path_prefix, so one value serves both: naming a POM
+          for the build alone would analyse a different module set
+          than the one just built. path_prefix already covers a POM
+          that is merely in a subdirectory.
+        required: false
+        type: string
+        default: ''
       jacoco_mode:
         description: >-
           Where the JaCoCo agents write execution data, passed to
@@ -652,6 +664,27 @@ jobs:
               ;;
           esac
 
+      - name: 'Validate mvn_pom_file input'
+        if: inputs.mvn_pom_file != ''
+        shell: bash
+        env:
+          MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
+        run: |
+          # The value reaches sonar-maven-plugin through the scan
+          # action's maven_args, which the action word-splits on the
+          # way to mvn. Whitespace would therefore arrive as two
+          # arguments rather than one filename. An absolute path or a
+          # '..' segment would escape path_prefix, which both the
+          # build and the scan resolve against.
+          case "${MVN_POM_FILE}" in
+            /* | *..* | *[[:space:]]*)
+              echo "::error::mvn_pom_file must be a path relative to" \
+                "path_prefix, without '..' segments or whitespace" \
+                "(received: '${MVN_POM_FILE}')"
+              exit 1
+              ;;
+          esac
+
       - name: 'Validate pre-scan hook combination'
         shell: bash
         env:
@@ -852,6 +885,7 @@ jobs:
           mvn-profiles: ${{ inputs.mvn_profiles }}
           mvn-params: ${{ inputs.mvn_params }}
           mvn-opts: ${{ inputs.mvn_opts }}
+          mvn-pom-file: ${{ inputs.mvn_pom_file }}
           # yamllint disable-line rule:line-length
           global-settings: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
           # Sonar reads coverage from the JaCoCo report, so produce one.
@@ -995,12 +1029,24 @@ jobs:
         env:
           # yamllint disable-line rule:line-length
           SETTINGS_CONTENT: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
+          MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
         run: |
           # Write the settings document and emit the Maven argument.
           set -euo pipefail
 
+          # Point sonar-maven-plugin at the POM the build used. It
+          # runs from the same directory, so the same relative path
+          # serves both; without this the plugin falls back to pom.xml
+          # and analyses a different module set than the one just
+          # built, which is the mismatch mvn_pom_file exists to close.
+          args=''
+          if [ -n "${MVN_POM_FILE}" ]; then
+            args="-f ${MVN_POM_FILE}"
+            echo "Analysis POM: ${MVN_POM_FILE}"
+          fi
+
           if [ -z "${SETTINGS_CONTENT}" ]; then
-            echo 'args=' >> "$GITHUB_OUTPUT"
+            echo "args=${args}" >> "$GITHUB_OUTPUT"
             echo 'No Maven settings supplied; the scan uses defaults'
             exit 0
           fi
@@ -1011,7 +1057,8 @@ jobs:
           # Never echoed: the document may carry repository credentials.
           printf '%s' "${SETTINGS_CONTENT}" > "${settings_file}"
 
-          echo "args=--global-settings ${settings_file}" >> "$GITHUB_OUTPUT"
+          echo "args=${args} --global-settings ${settings_file}" \
+            >> "$GITHUB_OUTPUT"
           echo "Maven settings provided to the scan: ${settings_file}"
 
       # no_checkout is 'true' because this workflow has already checked

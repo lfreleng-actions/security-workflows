@@ -189,6 +189,14 @@ jobs:
   # lane does its own work; the scan itself is the action's concern.
   # Audit egress because a real Maven build reaches artifact CDNs beyond
   # the allow-listed toolchain set.
+  #
+  # mvn_pom_file is set to Maven's own default rather than left empty,
+  # so the input travels end to end at no extra cost: it is validated,
+  # reaches maven-build-action, and is assembled into the '-f' argument
+  # handed to sonar-maven-plugin. A malformed assembly fails the scan
+  # here. It cannot prove a NON-default filename works, which needs a
+  # fixture that has one; the other Maven legs leave the input empty,
+  # so the unset path stays covered.
   sonarqube-cloud-maven:
     name: 'SonarQube Cloud (Maven)'
     permissions:
@@ -197,6 +205,7 @@ jobs:
     with:
       repository: 'lfreleng-actions/test-maven-project'
       build_type: 'maven'
+      mvn_pom_file: 'pom.xml'
       build_permit_egress_traffic: true
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}

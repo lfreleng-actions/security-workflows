@@ -231,6 +231,17 @@ on:
         required: false
         type: string
         default: ''
+      mvn_pom_file:
+        description: >-
+          POM file to build, relative to path_prefix, for projects
+          whose root POM is not called pom.xml. Empty leaves Maven's
+          own default. path_prefix already covers a POM that is merely
+          in a subdirectory. Unlike the Sonar lane, nothing downstream
+          needs telling: the Nexus IQ CLI scans scan_targets on disk
+          rather than reading the project model.
+        required: false
+        type: string
+        default: ''
       gradle_version:
         description: 'Gradle version for the pre-scan build'
         required: false
@@ -492,6 +503,25 @@ jobs:
               ;;
           esac
 
+      - name: 'Validate mvn_pom_file input'
+        if: inputs.mvn_pom_file != ''
+        shell: bash
+        env:
+          MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
+        run: |
+          # Rejected on the same terms as the Sonar lane, so a caller
+          # setting the input on both gets one answer rather than two.
+          # An absolute path or a '..' segment would escape
+          # path_prefix, which the build resolves against.
+          case "${MVN_POM_FILE}" in
+            /* | *..* | *[[:space:]]*)
+              echo "::error::mvn_pom_file must be a path relative to" \
+                "path_prefix, without '..' segments or whitespace" \
+                "(received: '${MVN_POM_FILE}')"
+              exit 1
+              ;;
+          esac
+
       - name: 'Validate build_type input'
         shell: bash
         env:
@@ -711,6 +741,7 @@ jobs:
           mvn-profiles: ${{ inputs.mvn_profiles }}
           mvn-params: ${{ inputs.mvn_params }}
           mvn-opts: ${{ inputs.mvn_opts }}
+          mvn-pom-file: ${{ inputs.mvn_pom_file }}
           # A synthesised document wins; otherwise fall back to a
           # complete settings.xml supplied as a secret.
           # yamllint disable-line rule:line-length
