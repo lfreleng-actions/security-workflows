@@ -813,7 +813,12 @@ against each repository's default branch.
   action beneath it can costs more to explain than to fix. The Sonar
   lane passes the same value to `sonar-maven-plugin` as `-f`, since
   naming a POM for the build alone would analyse a different module
-  set than the one just built.
+  set than the one just built. It takes a **filename**, not a path:
+  a directory component would move Maven's build root, and its
+  report with it, out from under where the scan action looks for it,
+  skipping the quality gate silently. Setting it also requires
+  `java_version`, because `build-metadata-action` detects the build
+  JDK by reading `pom.xml` and would otherwise fall back to 21.
 - **`ENV_SECRETS`** is the literal `"{}"` everywhere it appears in the
   sample. No scan caller puts a secret into the build environment, so
   the third-party environment-splatting action has no requirement
