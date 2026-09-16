@@ -30,12 +30,16 @@ release, which regenerates them. Those self-references were two releases
 stale at every point sampled.
 
 The cause is the **reference form**, not co-location. GitHub supports
-`./.github/workflows/X.yaml` for same-repository calls, which resolves
-to the same commit as the caller and therefore cannot go stale.
+same-repository calls that resolve to the same commit as the caller and
+therefore cannot go stale. Two spellings do this, and they behave
+identically: `./.github/workflows/X.yaml`, which this brief first
+recorded, and `$/.github/workflows/X.yaml`, the self-repository path
+added in July 2026. `$/` is the one GitHub now recommends and the one
+the callers here use; it is unavailable on GitHub Enterprise Server.
 
 ### Why splitting is not the fix for churn
 
-Splitting a repository *removes* the `./` escape hatch: cross-repository
+Splitting a repository *removes* that escape hatch: cross-repository
 references must be SHA-pinned, so a split makes coordinated change
 strictly harder — release A, then bump-and-release B, with no atomic
 option. Churn alone argues for co-location.
@@ -112,8 +116,8 @@ filename, and could not merge into one file: the self-scan is a
 `openssf-scorecard.yaml`, because that is the name consumers write in
 their `uses:` line, and the self-scan becomes
 `openssf-scorecard-self.yaml`. The self-scan now calls the lane by
-local path, so the repository dogfoods what it publishes and drops its
-last dependency on `lfit/releng-reusable-workflows`.
+self-repository path, so the repository dogfoods what it publishes and
+drops its last dependency on `lfit/releng-reusable-workflows`.
 
 ## Design decisions
 
@@ -837,7 +841,7 @@ bare `continue-on-error`, and nothing). Both are normalised here.
 - Never interpolate `${{ }}` into `run:` blocks; env-mediate.
 - Each lane, as it lands, ships
   `examples/<lane>/{github.yaml,gerrit.yaml}`; `testing.yaml` calls lanes
-  by local `./` path.
+  by self-repository `$/` path.
 
 ## Validation gate
 
@@ -850,7 +854,8 @@ Every lane must pass, with no exceptions:
 ## Follow-ups
 
 1. Port the six lanes (Phases 2–4), CLM first.
-2. Reinstate `testing.yaml`, wired to real fixtures by local path.
+2. Reinstate `testing.yaml`, wired to real fixtures by
+   self-repository path.
 3. Publish a migration map from the old `reuse-*` names.
 4. Pilot the CLM lane on ONAP `usecase-ui`, then roll to the remaining
    repositories.
