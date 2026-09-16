@@ -9,8 +9,10 @@
 # The two cannot be one file: this is a push/schedule/branch_protection
 # workflow and the lane is workflow_call.
 #
-# It calls the lane by LOCAL path, so the repository dogfoods the lane
-# it publishes and a regression shows up here first. That also removes
+# It calls the lane with the self-repository form ('$/'), which
+# resolves this repository at the commit already running, so the
+# repository dogfoods the lane it publishes and a regression shows up
+# here first. That also removes
 # the last dependency on lfit/releng-reusable-workflows, which this
 # repository replaces.
 #
@@ -41,7 +43,7 @@ permissions: {}
 jobs:
   openssf-scorecard:
     name: 'OpenSSF Scorecard'
-    uses: ./.github/workflows/openssf-scorecard.yaml
+    uses: $/.github/workflows/openssf-scorecard.yaml
     permissions:
       contents: read  # checkout
       security-events: write  # upload results to the code scanning dashboard

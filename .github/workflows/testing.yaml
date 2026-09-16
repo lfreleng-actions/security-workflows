@@ -3,8 +3,10 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Exercises the security lanes in this repository against fixture
-# repositories. Lanes are referenced by LOCAL path, so this always
-# validates the current branch.
+# repositories. Lanes are referenced with the self-repository form
+# ('$/'), which resolves this repository at the commit already
+# running, so the lanes under test are always the ones this branch
+# defines.
 #
 # The self-test runs on workflow_dispatch ONLY. The lanes need
 # organisation credentials (NEXUS_IQ_SERVER, NEXUS_IQ_USERNAME and the
@@ -33,7 +35,7 @@ jobs:
     name: 'Sonatype Lifecycle (Maven)'
     permissions:
       contents: read
-    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-maven-project'
       build_type: 'maven'
@@ -47,7 +49,7 @@ jobs:
     name: 'Sonatype Lifecycle (scan only)'
     permissions:
       contents: read
-    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-node-project'
       build_type: 'none'
@@ -72,7 +74,7 @@ jobs:
     needs: sonatype-lifecycle-scan-only
     permissions:
       contents: read
-    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-node-project'
       build_type: 'none'
@@ -129,7 +131,7 @@ jobs:
     needs: go-fixture-ref
     permissions:
       contents: read
-    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
       ref: ${{ needs.go-fixture-ref.outputs.sha }}
@@ -151,7 +153,7 @@ jobs:
     needs: [go-fixture-ref, sonatype-lifecycle-go]
     permissions:
       contents: read
-    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
       ref: ${{ needs.go-fixture-ref.outputs.sha }}
@@ -175,7 +177,7 @@ jobs:
     needs: [go-fixture-ref, sonatype-lifecycle-go-sum]
     permissions:
       contents: read
-    uses: ./.github/workflows/sonatype-lifecycle.yaml
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
       ref: ${{ needs.go-fixture-ref.outputs.sha }}
@@ -193,7 +195,7 @@ jobs:
     name: 'SonarQube Cloud (Maven)'
     permissions:
       contents: read
-    uses: ./.github/workflows/sonarqube-cloud.yaml
+    uses: $/.github/workflows/sonarqube-cloud.yaml
     with:
       repository: 'lfreleng-actions/test-maven-project'
       build_type: 'maven'
@@ -220,7 +222,7 @@ jobs:
     needs: sonarqube-cloud-maven
     permissions:
       contents: read
-    uses: ./.github/workflows/sonarqube-cloud.yaml
+    uses: $/.github/workflows/sonarqube-cloud.yaml
     with:
       repository: 'lfreleng-actions/test-maven-project'
       build_type: 'maven'
@@ -240,7 +242,7 @@ jobs:
     needs: go-fixture-ref
     permissions:
       contents: read
-    uses: ./.github/workflows/sonarqube-cloud.yaml
+    uses: $/.github/workflows/sonarqube-cloud.yaml
     with:
       repository: 'lfreleng-actions/test-go-project'
       ref: ${{ needs.go-fixture-ref.outputs.sha }}
@@ -255,7 +257,7 @@ jobs:
     name: 'SonarQube Cloud (scan only)'
     permissions:
       contents: read
-    uses: ./.github/workflows/sonarqube-cloud.yaml
+    uses: $/.github/workflows/sonarqube-cloud.yaml
     with:
       repository: 'lfreleng-actions/test-node-project'
       build_type: 'none'
@@ -270,7 +272,7 @@ jobs:
     name: 'Zizmor (self)'
     permissions:
       contents: read
-    uses: ./.github/workflows/zizmor.yaml
+    uses: $/.github/workflows/zizmor.yaml
 
   # Audit a fixture repository, which also covers the cross-repository
   # checkout path and the summary attribution inputs that go with it.
@@ -278,7 +280,7 @@ jobs:
     name: 'Zizmor (fixture)'
     permissions:
       contents: read
-    uses: ./.github/workflows/zizmor.yaml
+    uses: $/.github/workflows/zizmor.yaml
     with:
       repository: 'lfreleng-actions/test-python-project'
       persona: 'regular'
@@ -289,7 +291,7 @@ jobs:
     name: 'Package Hardening (self)'
     permissions:
       contents: read
-    uses: ./.github/workflows/package-hardening-audit.yaml
+    uses: $/.github/workflows/package-hardening-audit.yaml
     with:
       cooldown_strategy: 'dependabot'
 
@@ -306,7 +308,7 @@ jobs:
     name: 'OpenSSF Scorecard (dry run)'
     permissions:
       contents: read
-    uses: ./.github/workflows/openssf-scorecard.yaml
+    uses: $/.github/workflows/openssf-scorecard.yaml
     with:
       publish_results: false
       upload_sarif: false
@@ -324,7 +326,7 @@ jobs:
     permissions:
       contents: read
       packages: read  # fetch internal or private CodeQL packs
-    uses: ./.github/workflows/codeql.yaml
+    uses: $/.github/workflows/codeql.yaml
     with:
       repository: 'lfreleng-actions/test-python-project'
       languages: 'python,actions'
@@ -342,7 +344,7 @@ jobs:
     name: 'Action Pin Audit (self)'
     permissions:
       contents: read
-    uses: ./.github/workflows/action-pin-audit.yaml
+    uses: $/.github/workflows/action-pin-audit.yaml
     with:
       full_scan: true
 
@@ -352,7 +354,7 @@ jobs:
     name: 'Action Pin Audit (fixture)'
     permissions:
       contents: read
-    uses: ./.github/workflows/action-pin-audit.yaml
+    uses: $/.github/workflows/action-pin-audit.yaml
     with:
       repository: 'lfreleng-actions/test-python-project'
       full_scan: true
