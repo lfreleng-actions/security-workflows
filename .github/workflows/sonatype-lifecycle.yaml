@@ -231,6 +231,18 @@ on:
         required: false
         type: string
         default: ''
+      mvn_pom_file:
+        description: >-
+          Filename of the POM to build, inside path_prefix, for
+          projects whose root POM is not called pom.xml. A filename
+          only: path_prefix names the directory. Empty leaves Maven's
+          own default. Setting this requires java_version, because JDK
+          auto-detection reads pom.xml. Nothing downstream needs
+          telling: the Nexus IQ CLI scans scan_targets on disk rather
+          than reading the project model.
+        required: false
+        type: string
+        default: ''
       gradle_version:
         description: 'Gradle version for the pre-scan build'
         required: false
@@ -492,6 +504,47 @@ jobs:
               ;;
           esac
 
+      - name: 'Validate mvn_pom_file input'
+        if: inputs.mvn_pom_file != ''
+        shell: bash
+        env:
+          MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
+          JAVA_VERSION: ${{ inputs.java_version }}
+        run: |
+          # Rejected on the same terms as the Sonar lane, so a caller
+          # setting the input on both gets one answer rather than two.
+          # That lane needs an allow-list because the scan action
+          # word-splits and glob-expands the value on its way to
+          # sonar-maven-plugin; this lane has no such consumer, but a
+          # shared input with two different notions of validity is
+          # worse than a rule that is stricter than it needs to be
+          # here. '/' is excluded either way: path_prefix names the
+          # directory, this input names a file inside it.
+          case "${MVN_POM_FILE}" in
+            . | ..)
+              echo "::error::mvn_pom_file must name a file, not a" \
+                "directory entry (received: '${MVN_POM_FILE}')"
+              exit 1
+              ;;
+            *[!A-Za-z0-9._-]*)
+              echo "::error::mvn_pom_file may use only letters," \
+                "digits, dot, underscore and hyphen: it names a file" \
+                "inside path_prefix. Use path_prefix for the" \
+                "directory (received: '${MVN_POM_FILE}')"
+              exit 1
+              ;;
+          esac
+          # build-metadata-action detects the build JDK by reading
+          # pom.xml and knows nothing of this input, so a non-default
+          # POM would fall back to 21 with nothing said.
+          if [ "${MVN_POM_FILE}" != 'pom.xml' ] \
+            && [ -z "${JAVA_VERSION}" ]; then
+            echo "::error::mvn_pom_file '${MVN_POM_FILE}' requires" \
+              "java_version to be set: JDK auto-detection reads" \
+              "pom.xml and would fall back to 21"
+            exit 1
+          fi
+
       - name: 'Validate build_type input'
         shell: bash
         env:
@@ -711,6 +764,13 @@ jobs:
           mvn-profiles: ${{ inputs.mvn_profiles }}
           mvn-params: ${{ inputs.mvn_params }}
           mvn-opts: ${{ inputs.mvn_opts }}
+          # Never forwarded empty. The action interpolates this into
+          # -f "$PATH_PREFIX/$MVN_POM_FILE" unconditionally, and an
+          # empty value passed explicitly beats its own 'pom.xml'
+          # default, so every caller leaving the input unset would get
+          # -f './' and fail.
+          # yamllint disable-line rule:line-length
+          mvn-pom-file: ${{ inputs.mvn_pom_file != '' && inputs.mvn_pom_file || 'pom.xml' }}
           # A synthesised document wins; otherwise fall back to a
           # complete settings.xml supplied as a secret.
           # yamllint disable-line rule:line-length

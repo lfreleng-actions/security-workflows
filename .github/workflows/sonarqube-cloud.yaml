@@ -20,7 +20,8 @@
 # wraps the build rather than running beside it, so it belongs to the
 # scan action (build_wrapper_url) and not to build_type. Projects that
 # need some other pre-scan step, and whose language is not one of the
-# build_type options, can point prescan_script_url at a script.
+# build_type options, can point prescan_script_url at a script, or
+# prescan_script_path at one checked into the repository under review.
 #
 # Nothing organisation-specific lives in this lane. The Sonar host,
 # organisation and project key are all caller-supplied, and the Maven
@@ -228,6 +229,21 @@ on:
         required: false
         type: string
         default: ''
+      prescan_script_path:
+        description: >-
+          Path, relative to path_prefix, of a script checked into the
+          repository under review, run after checkout and before the
+          scan. Same purpose as prescan_script_url without fetching
+          from elsewhere: the script arrives through the same code
+          review as the change it accompanies, where an HTTPS URL to a
+          branch names content that can move after review. Mutually
+          exclusive with prescan_script_url, build_wrapper_url and any
+          build_type other than 'none'. Runs with bash, so it needs no
+          execute bit, and resolves inside the workspace or the job
+          fails.
+        required: false
+        type: string
+        default: ''
 
       # --- Pre-scan build ---
       build_type:
@@ -299,6 +315,19 @@ on:
         default: ''
       mvn_opts:
         description: 'Value for MAVEN_OPTS'
+        required: false
+        type: string
+        default: ''
+      mvn_pom_file:
+        description: >-
+          Filename of the POM to build and analyse, inside path_prefix,
+          for projects whose root POM is not called pom.xml. A
+          filename only: path_prefix names the directory. Empty leaves
+          Maven's own default. Both the build and sonar-maven-plugin
+          run from path_prefix, so one value serves both; naming a POM
+          for the build alone would analyse a different module set
+          than the one just built. Setting this requires java_version,
+          because JDK auto-detection reads pom.xml.
         required: false
         type: string
         default: ''
@@ -652,31 +681,157 @@ jobs:
               ;;
           esac
 
+      - name: 'Validate Maven POM inputs'
+        shell: bash
+        env:
+          MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
+          JAVA_VERSION: ${{ inputs.java_version }}
+          MAVEN_ARGS: ${{ inputs.maven_args }}
+        run: |
+          # maven_args reaches sonar-maven-plugin and nothing else, so
+          # an alternate-POM flag there points the analysis at a POM
+          # the build never saw -- one reactor built, a different one
+          # analysed. That holds whether or not mvn_pom_file is set,
+          # and the lane composes maven_args BEFORE its own -f, so the
+          # caller's copy would win. Reject it and name the typed
+          # input, which reaches both.
+          #
+          # Matched as whole tokens, and only in unambiguous forms:
+          # Maven's -fae, -ff and -fn are different options that
+          # merely share a prefix, and mvn_params legitimately carries
+          # them.
+          # shellcheck disable=SC2086
+          set -- ${MAVEN_ARGS}
+          for arg in "$@"; do
+            case "${arg}" in
+              -f | -f=* | --file | --file=*)
+                echo "::error::maven_args must not name a POM" \
+                  "('${arg}'): it reaches the analysis but not the" \
+                  "build, so the two would read different POMs. Use" \
+                  "mvn_pom_file, which reaches both."
+                exit 1
+                ;;
+            esac
+          done
+
+          [ -n "${MVN_POM_FILE}" ] || exit 0
+
+          # An allow-list, because the value has two consumers that
+          # The value reaches sonar-maven-plugin through the scan
+          # action's maven_args, which the action word-splits on the
+          # way to mvn. Whitespace would therefore arrive as two
+          # arguments rather than one filename. '/' is rejected for a
+          # different reason: Maven roots the build at the named POM's
+          # own directory and writes its report there, while the scan
+          # action looks for that report under path_prefix, so the
+          # quality gate would be skipped without saying so.
+          # path_prefix is how this lane names a directory; this input
+          # names a file inside it.
+          # An allow-list, because the value has two consumers that
+          # transport it differently. maven-build-action interpolates
+          # it into a quoted -f argument; the scan action expands
+          # workspace variables in maven_args and then leaves the
+          # string unquoted, so the shell word-splits AND
+          # pathname-expands it. A name like 'alt*.xml' or
+          # '$GITHUB_WORKSPACE.xml' would reach the build and the
+          # analysis as different arguments, which is precisely the
+          # build/scan divergence this input exists to prevent.
+          # Restricting to characters that survive both transports
+          # unchanged is the only way to keep them in step.
+          #
+          # '/' falls out of the same rule and is wanted for a second
+          # reason: Maven roots the build at the named POM's own
+          # directory and writes its report there, while the scan
+          # action looks for that report under path_prefix, so the
+          # quality gate would be skipped without saying so.
+          # path_prefix is how this lane names a directory; this input
+          # names a file inside it.
+          case "${MVN_POM_FILE}" in
+            . | ..)
+              echo "::error::mvn_pom_file must name a file, not a" \
+                "directory entry (received: '${MVN_POM_FILE}')"
+              exit 1
+              ;;
+            *[!A-Za-z0-9._-]*)
+              echo "::error::mvn_pom_file may use only letters," \
+                "digits, dot, underscore and hyphen: it names a file" \
+                "inside path_prefix, and the analysis receives it" \
+                "through an argument string the scanner word-splits" \
+                "and glob-expands. Use path_prefix for the directory" \
+                "(received: '${MVN_POM_FILE}')"
+              exit 1
+              ;;
+          esac
+          # build-metadata-action detects the build JDK by reading
+          # pom.xml and knows nothing of this input, so a non-default
+          # POM would fall back to 21 with nothing said. Demand the
+          # version rather than silently guess it wrong.
+          if [ "${MVN_POM_FILE}" != 'pom.xml' ] \
+            && [ -z "${JAVA_VERSION}" ]; then
+            echo "::error::mvn_pom_file '${MVN_POM_FILE}' requires" \
+              "java_version to be set: JDK auto-detection reads" \
+              "pom.xml and would fall back to 21"
+            exit 1
+          fi
+
       - name: 'Validate pre-scan hook combination'
         shell: bash
         env:
           BUILD_TYPE: ${{ inputs.build_type }}
           BUILD_WRAPPER_URL: ${{ inputs.build_wrapper_url }}
           PRESCAN_SCRIPT_URL: ${{ inputs.prescan_script_url }}
+          PRESCAN_SCRIPT_PATH: ${{ inputs.prescan_script_path }}
         run: |
           # Each of these populates the workspace before the scan, and
           # combining them means building twice with the second run
           # overwriting the first. The scan action rejects the
           # wrapper/prescan pair itself, but only once the job has
-          # already checked out and hardened, so check here too.
-          if [ -n "${BUILD_WRAPPER_URL}" ] \
-            && [ -n "${PRESCAN_SCRIPT_URL}" ]; then
-            echo "::error::build_wrapper_url and prescan_script_url" \
-              "are mutually exclusive"
+          # already checked out and hardened, so check here too. It
+          # knows nothing of prescan_script_path, which this lane runs
+          # rather than forwarding, so that pairing is ours alone.
+          hooks=0
+          for hook in "${BUILD_WRAPPER_URL}" "${PRESCAN_SCRIPT_URL}" \
+            "${PRESCAN_SCRIPT_PATH}"; do
+            [ -n "${hook}" ] && hooks=$((hooks + 1))
+          done
+          if [ "${hooks}" -gt 1 ]; then
+            echo "::error::build_wrapper_url, prescan_script_url and" \
+              "prescan_script_path are mutually exclusive"
             exit 1
           fi
-          if [ "${BUILD_TYPE}" != 'none' ]; then
-            if [ -n "${BUILD_WRAPPER_URL}" ] \
-              || [ -n "${PRESCAN_SCRIPT_URL}" ]; then
-              echo "::error::build_type '${BUILD_TYPE}' cannot combine" \
-                "with build_wrapper_url or prescan_script_url"
-              exit 1
-            fi
+          if [ "${BUILD_TYPE}" != 'none' ] && [ "${hooks}" -gt 0 ]; then
+            echo "::error::build_type '${BUILD_TYPE}' cannot combine" \
+              "with build_wrapper_url, prescan_script_url or" \
+              "prescan_script_path"
+            exit 1
+          fi
+          # Containment is confirmed against the real tree after
+          # checkout; this only rejects shapes that could never be
+          # workspace-relative, so a caller learns before the job runs.
+          # Unlike mvn_pom_file this may name a directory, and it
+          # travels only as a quoted shell variable, so a path is fine
+          # and no character allow-list applies.
+          if [ -n "${PRESCAN_SCRIPT_PATH}" ]; then
+            case "${PRESCAN_SCRIPT_PATH}" in
+              /*)
+                echo "::error::prescan_script_path must be relative" \
+                  "to path_prefix (received:" \
+                  "'${PRESCAN_SCRIPT_PATH}')"
+                exit 1
+                ;;
+            esac
+            # Wrapping the value in slashes turns a '..' path SEGMENT
+            # into a literal '/../', so a filename that merely
+            # contains two dots -- 'setup..sh' -- is left alone while
+            # '..', '../x', 'x/../y' and 'x/..' are all caught.
+            case "/${PRESCAN_SCRIPT_PATH}/" in
+              */../*)
+                echo "::error::prescan_script_path must not contain a" \
+                  "'..' segment (received:" \
+                  "'${PRESCAN_SCRIPT_PATH}')"
+                exit 1
+                ;;
+            esac
           fi
 
       - name: 'Validate quality gate inputs'
@@ -852,6 +1007,13 @@ jobs:
           mvn-profiles: ${{ inputs.mvn_profiles }}
           mvn-params: ${{ inputs.mvn_params }}
           mvn-opts: ${{ inputs.mvn_opts }}
+          # Never forwarded empty. The action interpolates this into
+          # -f "$PATH_PREFIX/$MVN_POM_FILE" unconditionally, and an
+          # empty value passed explicitly beats its own 'pom.xml'
+          # default, so every caller leaving the input unset would get
+          # -f './' and fail.
+          # yamllint disable-line rule:line-length
+          mvn-pom-file: ${{ inputs.mvn_pom_file != '' && inputs.mvn_pom_file || 'pom.xml' }}
           # yamllint disable-line rule:line-length
           global-settings: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
           # Sonar reads coverage from the JaCoCo report, so produce one.
@@ -995,12 +1157,32 @@ jobs:
         env:
           # yamllint disable-line rule:line-length
           SETTINGS_CONTENT: ${{ steps.settings.outputs.settings-content || secrets.maven_global_settings }}
+          MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
         run: |
           # Write the settings document and emit the Maven argument.
           set -euo pipefail
 
+          # Point sonar-maven-plugin at the POM the build used. It
+          # runs from the same directory, so the same relative path
+          # serves both; without this the plugin falls back to pom.xml
+          # and analyses a different module set than the one just
+          # built, which is the mismatch mvn_pom_file exists to close.
+          #
+          # './' is load-bearing. The scan action word-splits this
+          # string, so a name the allow-list permits but which begins
+          # with '-' would land in an option position: '-f -Dalt.xml'
+          # reads as a Maven option, and '--' as end-of-options.
+          # maven-build-action never sees that, because it prefixes
+          # PATH_PREFIX. Prefixing here keeps both sides naming the
+          # same file, whatever the filename starts with.
+          args=''
+          if [ -n "${MVN_POM_FILE}" ]; then
+            args="-f ./${MVN_POM_FILE}"
+            echo "Analysis POM: ./${MVN_POM_FILE}"
+          fi
+
           if [ -z "${SETTINGS_CONTENT}" ]; then
-            echo 'args=' >> "$GITHUB_OUTPUT"
+            echo "args=${args}" >> "$GITHUB_OUTPUT"
             echo 'No Maven settings supplied; the scan uses defaults'
             exit 0
           fi
@@ -1011,8 +1193,62 @@ jobs:
           # Never echoed: the document may carry repository credentials.
           printf '%s' "${SETTINGS_CONTENT}" > "${settings_file}"
 
-          echo "args=--global-settings ${settings_file}" >> "$GITHUB_OUTPUT"
+          echo "args=${args} --global-settings ${settings_file}" \
+            >> "$GITHUB_OUTPUT"
           echo "Maven settings provided to the scan: ${settings_file}"
+
+      # A script already in the repository under review is not the
+      # injection vector an inline script body would be: it arrives
+      # through the same code review as the change it accompanies, and
+      # the job has already checked it out. It is also no new trust
+      # boundary, because every build_type other than 'none' already
+      # runs the project's own build in this job.
+      #
+      # The URL form fetches from elsewhere, and both O-RAN-SC callers
+      # that use it point at refs/heads/master of another repository --
+      # content that can change after review, which is what pinning
+      # exists to prevent. This path closes that gap for projects able
+      # to keep the script beside the code it prepares.
+      #
+      # Run by the lane rather than forwarded, unlike
+      # prescan_script_url: the lane owns the checkout, so the script
+      # it runs is the one reviewed, and no second repository has to
+      # learn about it. Containment resolves here rather than in the
+      # validate job because only here does the tree exist.
+      - name: 'Run pre-scan script'
+        if: inputs.prescan_script_path != ''
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        env:
+          PRESCAN_SCRIPT_PATH: ${{ inputs.prescan_script_path }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PRESCAN_SCRIPT_PATH}" ]; then
+            echo "::error::prescan_script_path names no file:" \
+              "${PRESCAN_SCRIPT_PATH} (relative to path_prefix)"
+            exit 1
+          fi
+
+          # realpath follows symlinks, so this rejects a link pointing
+          # out of the checkout as well as a traversing path. The
+          # slash in the pattern keeps out a sibling directory whose
+          # name merely starts with the workspace path.
+          script="$(realpath -e -- "${PRESCAN_SCRIPT_PATH}")"
+          workspace="$(realpath -e -- "${GITHUB_WORKSPACE}")"
+          case "${script}" in
+            "${workspace}"/*) ;;
+            *)
+              echo "::error::prescan_script_path resolves outside the" \
+                "workspace: ${script}"
+              exit 1
+              ;;
+          esac
+
+          echo "Running pre-scan script: ${script}"
+          # Invoked through bash so the file needs no execute bit,
+          # which a checkout made on Windows may not carry.
+          bash "${script}"
 
       # no_checkout is 'true' because this workflow has already checked
       # out the code, and any pre-scan build has populated the
