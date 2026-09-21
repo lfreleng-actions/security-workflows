@@ -781,16 +781,48 @@ against each repository's default branch.
   than a scan workflow. The two jobs that do run a pre-scan script,
   both in O-RAN-SC, use `PRE_BUILD_SCRIPT_URL` pointing into
   `o-ran-sc/ci-management` — which the lane keeps as
-  `prescan_script_url`.
+  `prescan_script_url`. Restored as `prescan_script_path`, not
+  because anything was stranded but because those two URLs name
+  `refs/heads/master` of another repository: content that can change
+  after review, which is the property pinning exists to remove. The
+  inline form stays dropped and should: a script body arriving as an
+  input is a template-injection vector, where one checked into the
+  repository under review passes the same review as the change it
+  accompanies. The lane runs it rather than forwarding it, so the
+  script executed is the one the lane checked out, and containment
+  inside `GITHUB_WORKSPACE` is resolved against the real tree — a
+  symlink leaving the checkout fails the job.
 - **`OP_SECRET_REFERENCE`** is likewise set by no caller. The name
   occurs only in `reuse-sonatype-lifecycle.yaml`, which declares it.
+  Deliberately not restored. The argument for it is real — a
+  `{project}` placeholder resolved from `.gitreview` lets one caller
+  configuration serve a whole Gerrit host, where `maven_server_password`
+  fans a secret out per repository — but nothing in the estate is
+  waiting, and restoring it means adding a 1Password service-account
+  credential to the lane's `secrets:` interface for every caller,
+  whether or not they use it. The design to build when a
+  multi-repository Gerrit onboarding calls for it: `credential-load-action`
+  rather than inline reference parsing, mutually exclusive with
+  `maven_server_password`, failing clearly when both arrive.
 - **`MVN_POM_FILE`** is set by two callers, in four jobs, and every
   value names a file called `pom.xml`: `pom.xml` in `onap/ccsdk-sli`,
   and `pmproducer/pom.xml`, `influxlogger/pom.xml` and
   `datafilecollector/pom.xml` in `o-ran-sc/nonrtric-plt-ranpm`. The
   directory varies; the filename never does. `path_prefix` already
   selects the directory, so nothing in the estate needs the
-  non-standard filename this input existed to permit.
+  non-standard filename this input existed to permit. Restored
+  anyway, as `mvn_pom_file` on both lanes: `maven-build-action`
+  already accepted it, so the gap was plumbing rather than
+  capability, and leaving a lane unable to express something the
+  action beneath it can costs more to explain than to fix. The Sonar
+  lane passes the same value to `sonar-maven-plugin` as `-f`, since
+  naming a POM for the build alone would analyse a different module
+  set than the one just built. It takes a **filename**, not a path:
+  a directory component would move Maven's build root, and its
+  report with it, out from under where the scan action looks for it,
+  skipping the quality gate silently. Setting it also requires
+  `java_version`, because `build-metadata-action` detects the build
+  JDK by reading `pom.xml` and would otherwise fall back to 21.
 - **`ENV_SECRETS`** is the literal `"{}"` everywhere it appears in the
   sample. No scan caller puts a secret into the build environment, so
   the third-party environment-splatting action has no requirement
@@ -804,12 +836,26 @@ against each repository's default branch.
   lane covers the first intent with `wait_for_quality_gate` and
   `fail_on_quality_gate` as typed inputs.
 
+  Neither is restored. `ENV_SECRETS` has no requirement behind it at
+  all. `ENV_VARS` has one value already served by a typed input and
+  one that appears inert, and nine jobs carrying an inert setting are
+  evidence of copy-paste propagating, not of demand — a migration is
+  the moment to stop propagating it. Should a project state a genuine
+  per-project build variable requirement, the answer is a typed,
+  explicitly declared input with secrets arriving through `secrets:`,
+  not the opaque JSON blob and third-party environment-splatting
+  action this replaced.
+
 This records what callers set, not a refusal to serve the underlying
-need — a project could want any of these tomorrow, and #58, #59, #60
-and #61 remain the place to argue for them. It does mean none of the
-omissions blocks the migration, and that a replacement should be
-designed against a stated requirement rather than restored on the
-assumption that the old input was load-bearing.
+need — a project could want any of these tomorrow, and a fresh issue
+stating the requirement is the place to argue for them. Two are now
+served: `mvn_pom_file` and `prescan_script_path` both landed, the
+first because the action beneath the lane already accepted it, the
+second because the alternative in live use names a mutable branch.
+The other three stay out on the evidence above. None of the omissions
+blocks the migration, and a replacement should be designed against a
+stated requirement rather than restored on the assumption that the old
+input was load-bearing.
 
 ## Shared input vocabulary
 
