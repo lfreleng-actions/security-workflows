@@ -210,7 +210,7 @@ on:
         description: 'Maven version for the pre-scan build'
         required: false
         type: string
-        default: '3.9.5'
+        default: '3.9.11'
       mvn_phases:
         description: 'Maven lifecycle phases for the pre-scan build'
         required: false
