@@ -281,7 +281,7 @@ on:
         description: 'Maven version'
         required: false
         type: string
-        default: '3.9.5'
+        default: '3.9.11'
       mvn_phases:
         description: 'Maven phases to run'
         required: false
