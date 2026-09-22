@@ -435,7 +435,7 @@ jobs:
 
       - name: 'Run zizmor audit'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/zizmor-scan-action@74b00745503c4bde8cdb49f1e6e56b355900f1f6  # v0.5.1
+        uses: lfreleng-actions/zizmor-scan-action@d2e4f3982764e581c874ad5b1e1e2b0624f7c656  # v0.5.2
         with:
           persona: ${{ inputs.persona }}
           min-severity: ${{ inputs.min_severity }}
