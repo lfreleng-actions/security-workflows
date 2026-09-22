@@ -1088,7 +1088,7 @@ jobs:
         if: inputs.build_type == 'go'
         continue-on-error: ${{ inputs.build_permit_fail == true }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/go-test-action@5caee8cfff691851b3eed6748373d5aabfd926a7  # v0.1.0
+        uses: lfreleng-actions/go-test-action@e88abb6cb59c0e0fd54505124df6eef058876bf8  # v0.1.1
         with:
           path_prefix: ${{ inputs.path_prefix }}
           go_version: ${{ inputs.go_version }}
