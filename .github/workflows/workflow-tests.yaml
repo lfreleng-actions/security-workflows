@@ -1,0 +1,64 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Runs tests/workflow-steps.sh, which executes the lanes' validation
+# and hook steps against generated inputs.
+#
+# This is the one self-test that runs on every pull request. testing.yaml
+# drives whole lanes against real fixtures, which needs organisation
+# credentials and so runs only on dispatch; it also cannot assert that a
+# lane REJECTS an input, because a job calling a reusable workflow cannot
+# carry continue-on-error. The steps exercised here read only their own
+# env, so they need no credentials, no network and no fixture.
+name: 'Workflow step tests'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main']
+    paths:
+      - '.github/workflows/**'
+      - 'tests/**'
+  push:
+    branches: ['main']
+    paths:
+      - '.github/workflows/**'
+      - 'tests/**'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-steps:
+    name: 'Workflow step tests'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          # Nothing here needs the network after checkout; block it so
+          # a step under test that reached out would fail visibly.
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ubuntu-latest ships mikefarah yq v4; the harness checks for it
+      # and fails with a clear message rather than misparsing.
+      - name: 'Run workflow step tests'
+        shell: bash
+        run: tests/workflow-steps.sh
