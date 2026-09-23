@@ -20,9 +20,16 @@ name: 'Testing 🧪'
 on:
   workflow_dispatch:
 
+# One run at a time across ALL refs, and never cancelled mid-flight.
+# Every credentialled leg scans into a server-side project shared by
+# every run -- a Nexus IQ application, a Sonar project -- so two runs
+# overlapping, from any two branches, could each read the other's
+# result. Cancelling is no protection: a cancelled scan's analysis can
+# still finish processing on the server after its replacement starts.
+# A new dispatch queues behind the one in flight instead.
 concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
+  group: "${{ github.workflow }}"
+  cancel-in-progress: false
 
 permissions: {}
 
@@ -66,9 +73,10 @@ jobs:
   # because both target the same fixture, and so the same Nexus IQ
   # application.
   #
-  # This covers the plumbing, NOT the resulting tree: no fixture in the
-  # organisation carries a submodule, so nothing here can catch a
-  # submodule silently missing from the scan. Tracked as #74.
+  # This covers the plumbing, NOT the resulting tree: test-node-project
+  # carries no submodule, so nothing here can catch one silently
+  # missing from the scan. The submodule-* jobs at the end of this file
+  # do, against a fixture built for it.
   sonatype-lifecycle-checkout-inputs:
     name: 'Sonatype Lifecycle (checkout inputs)'
     needs: sonatype-lifecycle-scan-only
@@ -601,3 +609,235 @@ jobs:
           done
           [ "${status}" -eq 0 ] || exit 1
           echo 'Both lanes resolved the toolchain the project asked ✅'
+
+  # --- Submodules reach the scan (#74) ---------------------------------
+  #
+  # Both lanes hand 'submodules' to actions/checkout, and a fault there
+  # is silent by construction: the scan keeps passing against less code.
+  # Neither lane reports what it analysed, so assert-submodule-scan.yaml
+  # asks the server afterwards, through tests/scan_contents.py.
+  #
+  # lfreleng-actions/test-python-submodules nests three levels, and each
+  # carries something no other level does: a requirements.txt pin, which
+  # Nexus IQ identifies, and a marker file, which Sonar indexes.
+  #
+  #   level    pin               marker
+  #   parent   six==1.17.0       parent_level.py
+  #   direct   iniconfig==2.0.0  direct/direct_level.py
+  #   nested   tomli==2.2.1      direct/nested/nested_level.py
+  #
+  # Each lane scans twice. 'recursive' must yield all three levels.
+  # 'true' must yield the direct level and NOT the nested one: that is
+  # the negative control, proving the check can fail at all and catching
+  # a lane that ignores the input and always recurses, which a
+  # presence-only check would pass.
+  #
+  # Each lane's chain runs in series, because a lane scans into one
+  # server-side project:
+  #
+  #   baseline -> scan recursive -> assert -> scan true -> assert
+  #
+  # The baseline records the newest result the server holds before the
+  # first scan, and each assert emits the result it confirmed as the
+  # next one's baseline. An assert accepts only a result with a new
+  # identity that is strictly newer by the server's own clock, so it
+  # cannot read one left by an earlier leg, and the workflow-wide
+  # concurrency group above stops another run writing in between.
+
+  # Every leg scans the same commit, so a push to the fixture mid-run
+  # cannot leave the two checkout modes looking at different trees.
+  submodule-fixture-ref:
+    name: 'Resolve submodule fixture commit'
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+      - name: 'Resolve default branch head'
+        id: resolve
+        shell: bash
+        env:
+          FIXTURE: 'lfreleng-actions/test-python-submodules'
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote "https://github.com/${FIXTURE}.git" \
+            refs/heads/main | cut -f1)"
+          if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve ${FIXTURE} refs/heads/main"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "${FIXTURE} pinned at ${sha}"
+
+  submodule-clm-baseline:
+    name: 'Baseline (CLM, submodules)'
+    permissions:
+      contents: read
+    uses: $/.github/workflows/assert-submodule-scan.yaml
+    with:
+      mode: 'baseline'
+      server: 'nexus-iq'
+      subject: 'lfreleng-actions-test-python-submodules'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  submodule-clm-recursive:
+    name: 'Sonatype Lifecycle (submodules: recursive)'
+    needs: [submodule-fixture-ref, submodule-clm-baseline]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-submodules'
+      ref: ${{ needs.submodule-fixture-ref.outputs.sha }}
+      build_type: 'none'
+      submodules: 'recursive'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  submodule-clm-recursive-assert:
+    name: 'Assert (CLM, submodules: recursive)'
+    needs: [submodule-clm-baseline, submodule-clm-recursive]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/assert-submodule-scan.yaml
+    with:
+      mode: 'assert'
+      server: 'nexus-iq'
+      subject: 'lfreleng-actions-test-python-submodules'
+      after: ${{ needs.submodule-clm-baseline.outputs.seen }}
+      present: 'six,iniconfig,tomli'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  submodule-clm-true:
+    name: 'Sonatype Lifecycle (submodules: true)'
+    needs: [submodule-fixture-ref, submodule-clm-recursive-assert]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-submodules'
+      ref: ${{ needs.submodule-fixture-ref.outputs.sha }}
+      build_type: 'none'
+      submodules: 'true'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  submodule-clm-true-assert:
+    name: 'Assert (CLM, submodules: true)'
+    needs: [submodule-clm-recursive-assert, submodule-clm-true]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/assert-submodule-scan.yaml
+    with:
+      mode: 'assert'
+      server: 'nexus-iq'
+      subject: 'lfreleng-actions-test-python-submodules'
+      # The report the recursive leg confirmed, which the application
+      # still holds: this must see a newer one, or it is reading that.
+      after: ${{ needs.submodule-clm-recursive-assert.outputs.seen }}
+      present: 'six,iniconfig'
+      absent: 'tomli'
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
+  submodule-sonar-baseline:
+    name: 'Baseline (Sonar, submodules)'
+    permissions:
+      contents: read
+    uses: $/.github/workflows/assert-submodule-scan.yaml
+    with:
+      mode: 'baseline'
+      server: 'sonar'
+      subject: 'lfreleng-actions_test-python-submodules'
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  # wait_for_quality_gate makes the scan action poll the compute task
+  # until it has an analysis ID, so the job ends only once SonarCloud has
+  # processed the analysis and the file tree the assertion reads is this
+  # scan's. fail_on_quality_gate stays off: the fixture's code quality is
+  # not what these legs test.
+  #
+  # sonar_branch_name is pinned, not left to the scanner. Unnamed, the
+  # scanner's GitHub Actions auto-configuration analyses under the ref
+  # that dispatched this run, so a run from a branch under review would
+  # land on a branch the assertion never reads. tests/scan_contents.py
+  # queries the same name (SONAR_BRANCH), so the two cannot disagree.
+  #
+  # The project is named here too, overriding the fixture's own
+  # sonar-project.properties, for the same reason: the scan and the
+  # assertion then name one project, whatever the fixture file says.
+  submodule-sonar-recursive:
+    name: 'SonarQube Cloud (submodules: recursive)'
+    needs: [submodule-fixture-ref, submodule-sonar-baseline]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/sonarqube-cloud.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-submodules'
+      ref: ${{ needs.submodule-fixture-ref.outputs.sha }}
+      build_type: 'none'
+      submodules: 'recursive'
+      wait_for_quality_gate: true
+      sonar_branch_name: 'main'
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-python-submodules'
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  submodule-sonar-recursive-assert:
+    name: 'Assert (Sonar, submodules: recursive)'
+    needs: [submodule-sonar-baseline, submodule-sonar-recursive]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/assert-submodule-scan.yaml
+    with:
+      mode: 'assert'
+      server: 'sonar'
+      subject: 'lfreleng-actions_test-python-submodules'
+      after: ${{ needs.submodule-sonar-baseline.outputs.seen }}
+      present: 'parent_level.py,direct_level.py,nested_level.py'
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  submodule-sonar-true:
+    name: 'SonarQube Cloud (submodules: true)'
+    needs: [submodule-fixture-ref, submodule-sonar-recursive-assert]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/sonarqube-cloud.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-submodules'
+      ref: ${{ needs.submodule-fixture-ref.outputs.sha }}
+      build_type: 'none'
+      submodules: 'true'
+      wait_for_quality_gate: true
+      sonar_branch_name: 'main'
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-python-submodules'
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
+
+  submodule-sonar-true-assert:
+    name: 'Assert (Sonar, submodules: true)'
+    needs: [submodule-sonar-recursive-assert, submodule-sonar-true]
+    permissions:
+      contents: read
+    uses: $/.github/workflows/assert-submodule-scan.yaml
+    with:
+      mode: 'assert'
+      server: 'sonar'
+      subject: 'lfreleng-actions_test-python-submodules'
+      after: ${{ needs.submodule-sonar-recursive-assert.outputs.seen }}
+      present: 'parent_level.py,direct_level.py'
+      absent: 'nested_level.py'
+    secrets:
+      sonar_token: ${{ secrets.SONAR_TOKEN }}
