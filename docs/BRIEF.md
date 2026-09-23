@@ -714,6 +714,74 @@ change's favour: adopting `go.list` adds a narrower failure surface
 than the issue feared, and `build_permit_fail` does not soften what
 remains, deliberately, as with the other Go steps.
 
+### D24 — `sonatype-lifecycle.yaml` gets a `python` `build_type`
+
+Three O-RAN-SC Gerrit projects still run the legacy
+`gerrit-tox-nexus-iq-clm` job: `pti-o2`, `smo-ves` and
+`ric-plt-xapp-frame-py`. That job is misnamed: its builder runs no
+tox, only `pip download -r requirements.txt` into a directory the
+Nexus IQ CLI then scans. Surveyed September 2026.
+
+Resolving first is the point, and one of those consumers shows why.
+Sonatype's [Python Application Analysis][py-app-analysis] reads only a
+file named `requirements.txt`, and only its `==` lines. `pti-o2` pins
+two of its eighteen requirement lines exactly, so a manifest scan
+would evaluate two components; resolved, the same project yields 56
+artefacts. A green manifest scan there would have evaluated almost
+nothing — D12 exactly.
+
+[py-app-analysis]: https://help.sonatype.com/en/python-application-analysis.html
+
+The source is taken in order, first match winning: `requirements.txt`
+for parity with the legacy job; then `uv.lock`, exported through uv so
+the scan sees locked versions rather than fresh resolutions of the
+same ranges; then `pyproject.toml` or `setup.py`, resolved as
+installing the project would. `ric-plt-xapp-frame-py` needs the last:
+it has no `requirements.txt`, so the legacy script, which hardcodes
+that name, could not have resolved it at all.
+
+The legacy builder also advertised a `REQUIREMENTS_FILE` parameter
+that the script never read. No equivalent is offered: an input that
+does nothing is worse than no input.
+
+Four findings from resolving the real projects rather than reasoning
+about them:
+
+- **The interpreter changes what resolves.** Neither `smo-ves` nor
+  `ric-plt-xapp-frame-py` declares `requires-python`, so uv picks the
+  newest. Both then fail: `gevent==22.10.2` and `hiredis==2.0.0` ship
+  no wheel for Python 3.12 or later, and building them from source
+  fails. Both resolve cleanly under 3.11 (40 and 18 artefacts). The
+  lane does not guess an older default; `python_version` pins it, and
+  the failure names that input and points at the package responsible.
+  Markers make it matter even when resolution succeeds: `pti-o2`
+  yields 54 to 57 artefacts across 3.9 to 3.13.
+- **`--frozen` scanned a stale lock green.** With a runtime
+  dependency declared in `pyproject.toml` and absent from `uv.lock`,
+  `uv export --frozen` exported cleanly and the scan passed without
+  it, because `--frozen` reads the lock without checking it. The lane
+  uses `--locked`, which fails on a stale lock and names the fix.
+- **What looked like build tooling was not.** `pip download` on
+  `ric-plt-xapp-frame-py` fetched `build`, `setuptools`, `packaging`
+  and `pyproject_hooks`, which read as build-backend leakage of the
+  kind `go.sum` suffers from. They are genuine runtime dependencies,
+  declared by `inotify`, `ricsdl`, `redis` and `build` respectively,
+  so nothing is filtered.
+- **The lane resolves for Linux.** Markers are evaluated on the
+  runner, so a dependency confined to `sys_platform == 'win32'` is not
+  scanned. The legacy job, on a Linux builder, behaved identically.
+
+No `continue-on-error`, as for the Go steps: a failed resolution
+leaves the scan target empty or partial, and `build_permit_fail`
+softening that would scan a fraction of the graph as though it were
+whole. An empty result also fails, since a project depending on
+nothing outside the standard library scans identically to a
+resolution that silently fetched nothing.
+
+uv provisions the interpreter, so the lane needs no `setup-python`,
+and supplies `uv export` for lock files; pip does the resolving,
+because uv has no download command.
+
 ### Legacy defects not carried forward
 
 The audit of the source SonarCloud workflows found the following. None

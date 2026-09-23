@@ -187,6 +187,25 @@ jobs:
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
 
+  # Cover build_type 'python' through its uv.lock branch, which is the
+  # fixture's shape and the one the estate is moving to. The other two
+  # branches -- requirements.txt and bare project metadata -- were
+  # verified against the O-RAN-SC projects that motivated the build
+  # type, and the no-manifest rejection runs on every PR in
+  # tests/workflow-steps.sh. Audit egress: resolution reaches PyPI and
+  # uv's interpreter downloads.
+  sonatype-lifecycle-python:
+    name: 'Sonatype Lifecycle (Python)'
+    permissions:
+      contents: read
+    uses: $/.github/workflows/sonatype-lifecycle.yaml
+    with:
+      repository: 'lfreleng-actions/test-python-project'
+      build_type: 'python'
+      build_permit_egress_traffic: true
+    secrets:
+      nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}
+
   # Exercise the SonarQube Cloud lane's build stage, which is where the
   # lane does its own work; the scan itself is the action's concern.
   # Audit egress because a real Maven build reaches artifact CDNs beyond
