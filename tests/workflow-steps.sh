@@ -205,6 +205,41 @@ check 'runs after the Gerrit checkout' test "${prescan_at}" -gt \
 check 'runs before the scan' test "${prescan_at}" -lt \
   "$(at 'SonarQube Cloud scan')"
 
+echo '== build_type python (sonatype-lifecycle)'
+step "${clm}" gerrit-validate 'Validate build_type input'
+expect pass "accepts 'python'" BUILD_TYPE=python
+match="'python'"
+expect fail 'rejects an unknown build type, naming python among the choices' \
+  BUILD_TYPE=python3
+step "${clm}" gerrit-validate 'Validate scan_mode input'
+match='requires'
+expect fail "rejects scan_mode 'sbom' with python" BUILD_TYPE=python \
+  SCAN_MODE=sbom
+
+# Only the no-manifest case is testable offline: detection is ordered
+# before anything is fetched precisely so that it is. Resolution itself
+# needs PyPI and runs in testing.yaml.
+step "${clm}" scan 'Resolve Python dependencies'
+mkdir -p "${work}/py-empty"
+dir="${work}/py-empty"
+match="::error::build_type 'python' found nothing to resolve"
+expect fail 'rejects a project with nothing to resolve' \
+  RUNNER_TEMP="${work}" PYTHON_VERSION=''
+check '  before creating an environment' test ! -e "${work}/clm-python"
+dir="${work}"
+
+clm_names="$(yq '.jobs.scan.steps[].name' "${root}/.github/workflows/${clm}")"
+clm_at() { printf '%s\n' "${clm_names}" | grep -nxF -- "$1" | cut -d: -f1; }
+check 'python resolves after checkout' test \
+  "$(clm_at 'Resolve Python dependencies')" -gt \
+  "$(clm_at 'Checkout repository')"
+check 'python resolves before the scan' test \
+  "$(clm_at 'Resolve Python dependencies')" -lt \
+  "$(clm_at 'Sonatype Lifecycle scan')"
+check 'the scan targets the resolved directory for python' \
+  grep -qF "inputs.build_type == 'python' && format('{0}/.python-deps'" \
+  "${root}/.github/workflows/${clm}"
+
 echo
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} of ${cases} cases FAILED"

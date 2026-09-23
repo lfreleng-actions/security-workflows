@@ -37,7 +37,10 @@ jobs:
     uses: lfreleng-actions/security-workflows/.github/workflows/sonatype-lifecycle.yaml@0000000000000000000000000000000000000000  # REPLACE: vX.Y.Z
     # Optional inputs, shown with their defaults:
     #  with:
-    #   build_type: 'none'          # 'maven', 'gradle' or 'go' to build first
+    #   build_type: 'none'          # 'maven', 'gradle', 'go' or 'python'
+    #                               # to resolve dependencies first
+    #   python_version: ''          # 'python' only; empty lets uv pick one
+    #                               # meeting requires-python
     #   java_version: ''            # build JDK; empty auto-detects
     #   iq_java_version: '17'       # Nexus IQ CLI runtime JDK
     #   scan_mode: 'cli'            # 'cli' runs the Nexus IQ CLI over

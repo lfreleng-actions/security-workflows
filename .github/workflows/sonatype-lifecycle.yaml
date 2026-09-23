@@ -16,6 +16,12 @@
 # go_scan_target choosing between a generated go.list and a tidied
 # go.sum) or generates a CycloneDX SBOM with cyclonedx-gomod and
 # uploads it through the Nexus IQ REST API ('sbom').
+#
+# Python's build_type resolves the project's dependencies into a
+# directory of the artefacts pip would install, and the CLI scans
+# that. A manifest scan is not a substitute: Nexus IQ reads only a
+# requirements.txt, and only its exactly-pinned lines, so a loosely
+# pinned project would scan green having evaluated almost nothing.
 # Both mirror the two branches ONAP's legacy Jenkins Go CLM jobs picked
 # between via nexus-iq-use-cli; 'sbom' exists only for parity with
 # projects that ran that branch, since it forgoes the policy gating
@@ -162,10 +168,21 @@ on:
       # --- Optional pre-scan build ---
       build_type:
         description: >-
-          Pre-scan build to run: 'none', 'maven', 'gradle' or 'go'
+          Pre-scan build to run: 'none', 'maven', 'gradle', 'go' or
+          'python'
         required: false
         type: string
         default: 'none'
+      python_version:
+        description: >-
+          Python for build_type 'python' to resolve dependencies
+          under, as uv accepts it ('3.12', '3.11.9'). Empty lets uv
+          choose one satisfying the project's requires-python. It
+          matters: dependency markers are evaluated against the
+          interpreter, so the set scanned can differ between versions.
+        required: false
+        type: string
+        default: ''
       java_version:
         description: >-
           Java version for the pre-scan build. Empty auto-detects from
@@ -511,6 +528,14 @@ jobs:
           MVN_POM_FILE: ${{ inputs.mvn_pom_file }}
           JAVA_VERSION: ${{ inputs.java_version }}
         run: |
+          # Also guarded here, not only by the step's if:, so the check
+          # stays correct for an empty value on its own terms: the
+          # java_version rule below would otherwise reject every caller
+          # that leaves the input unset. The Sonar lane has no if: at
+          # all, and tests/workflow-steps.sh runs both against the same
+          # cases.
+          [ -n "${MVN_POM_FILE}" ] || exit 0
+
           # Rejected on the same terms as the Sonar lane, so a caller
           # setting the input on both gets one answer rather than two.
           # That lane needs an allow-list because the scan action
@@ -554,10 +579,10 @@ jobs:
           # otherwise skip the build stage silently and scan an
           # unpopulated workspace.
           case "${BUILD_TYPE}" in
-            none | maven | gradle | go) ;;
+            none | maven | gradle | go | python) ;;
             *)
               echo "::error::build_type must be 'none', 'maven'," \
-                "'gradle' or 'go' (received: '${BUILD_TYPE}')"
+                "'gradle', 'go' or 'python' (received: '${BUILD_TYPE}')"
               exit 1
               ;;
           esac
@@ -919,6 +944,144 @@ jobs:
       # under scan. The scan action defaults it from the calling
       # repository, which is wrong whenever `repository` points
       # elsewhere, so resolve it here rather than relying on that.
+      # build_type 'python'. uv provisions the interpreter, so no
+      # setup-python is needed, and supplies 'uv export' for a uv.lock;
+      # pip does the resolving, since uv has no download command. Cache
+      # off for the same reason as Setup Go: a scan should not read
+      # state a previous, possibly lower-privileged run wrote.
+      - name: 'Setup uv'
+        if: inputs.build_type == 'python'
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          version: '0.11.23'
+          enable-cache: false
+
+      # Resolve, then scan what resolved. Nexus IQ reads only a file
+      # named requirements.txt, and only its '==' lines, so scanning
+      # the manifest of a loosely pinned project is the D12 hazard: a
+      # green result that evaluated almost nothing. Sonatype's own
+      # guidance is to resolve first, which is what the legacy
+      # nexus-iq-python-cli.sh did with 'pip download -r'.
+      #
+      # The source is taken in this order, first match wins:
+      #
+      #   requirements.txt  the legacy recipe, kept first for parity
+      #                     with projects migrating off the JJB job
+      #   uv.lock           exported through uv, so the scan sees the
+      #                     locked versions rather than fresh
+      #                     resolutions of the same ranges
+      #   pyproject.toml    the project's own declared dependencies,
+      #   or setup.py       resolved as installing it would
+      #
+      # The legacy job advertised a REQUIREMENTS_FILE parameter it
+      # never read; no such input is offered here rather than one that
+      # does nothing. Detection runs before anything is fetched, so a
+      # project with nothing to resolve fails without network.
+      #
+      # No continue-on-error, as for the Go steps: a failed resolution
+      # leaves the scan target empty or partial, and build_permit_fail
+      # softening that would scan a fraction of the graph as if whole.
+      - name: 'Resolve Python dependencies'
+        if: inputs.build_type == 'python'
+        shell: bash
+        working-directory: ${{ inputs.path_prefix }}
+        env:
+          PYTHON_VERSION: ${{ inputs.python_version }}
+        run: |
+          set -euo pipefail
+
+          if [ -f requirements.txt ]; then
+            source='requirements.txt'
+          elif [ -f uv.lock ]; then
+            source='uv.lock'
+          elif [ -f pyproject.toml ] || [ -f setup.py ]; then
+            source='project metadata'
+          else
+            echo "::error::build_type 'python' found nothing to" \
+              "resolve: no requirements.txt, uv.lock, pyproject.toml" \
+              "or setup.py in path_prefix"
+            exit 1
+          fi
+          echo "Resolving from: ${source}"
+
+          venv="${RUNNER_TEMP}/clm-python"
+          python_args=()
+          if [ -n "${PYTHON_VERSION}" ]; then
+            python_args=(--python "${PYTHON_VERSION}")
+          fi
+          uv venv --quiet --seed "${python_args[@]}" "${venv}"
+          interpreter="$("${venv}/bin/python" --version)"
+          echo "Resolving under: ${interpreter}"
+          # Not --quiet: when resolution fails, the last 'Collecting'
+          # line is what names the package responsible.
+          pip=("${venv}/bin/python" -m pip download --progress-bar off \
+            --disable-pip-version-check --dest .python-deps)
+
+          # Each command returns explicitly: errexit does not apply
+          # inside a function called in a || list, so a failed export
+          # would otherwise fall through to an empty download. 2 marks
+          # a lock that cannot be exported; 1 a download that failed.
+          resolve() {
+            case "${source}" in
+              requirements.txt)
+                "${pip[@]}" -r requirements.txt || return 1
+                ;;
+              uv.lock)
+                # --locked, not --frozen. Both read the lock rather
+                # than re-resolve, but --frozen does not check it
+                # against pyproject.toml: a lock missing a declared
+                # runtime dependency exported cleanly and scanned
+                # green without it. --locked fails on a stale lock
+                # instead. Hashes stay in, so pip verifies every
+                # artefact against the lock. Runtime only, and the
+                # project itself is omitted: it is the thing under
+                # scan, not a dependency of it.
+                exported="${RUNNER_TEMP}/clm-uv-requirements.txt"
+                uv export --quiet --locked --format requirements-txt \
+                  --no-dev --no-emit-project > "${exported}" || return 2
+                "${pip[@]}" -r "${exported}" || return 1
+                ;;
+              'project metadata')
+                "${pip[@]}" . || return 1
+                ;;
+            esac
+          }
+
+          rm -rf .python-deps
+          status=0
+          resolve || status=$?
+          if [ "${status}" -eq 2 ]; then
+            echo "::error::uv.lock is out of date with pyproject.toml," \
+              "so it no longer describes what the project declares." \
+              "Run 'uv lock' and commit the result; scanning the stale" \
+              "lock would miss whatever it lacks."
+            exit 1
+          elif [ "${status}" -ne 0 ]; then
+            # The common cause, found migrating the first consumers:
+            # an old exact pin with no wheel for a newer interpreter
+            # falls back to building from source, which fails. With
+            # no requires-python in the project, uv picks the newest.
+            echo "::error::could not resolve the dependencies in" \
+              "${source} under ${interpreter}. A pinned package with" \
+              "no wheel for this Python is built from source instead," \
+              "which often fails for older pins; set python_version" \
+              "to a release the project supports. The last" \
+              "'Collecting' line above names the package."
+            exit 1
+          fi
+
+          # A project depending on nothing outside the standard
+          # library resolves to an empty directory, which would scan
+          # identically to a resolution that silently fetched nothing.
+          count="$(find .python-deps -maxdepth 1 -type f | wc -l)"
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::no Python dependencies resolved from" \
+              "${source}, so there is nothing for Nexus IQ to evaluate"
+            exit 1
+          fi
+          echo "Artefacts resolved for the scan: ${count}"
+
       - name: 'Resolve Nexus IQ application id'
         id: application
         shell: bash
@@ -993,11 +1156,13 @@ jobs:
           iq_cli_version: ${{ inputs.iq_cli_version }}
           application_id: ${{ steps.application.outputs.id }}
           # The Go path scans one resolved file rather than the source
-          # tree -- go.list or go.sum, per go_scan_target -- so
-          # scan_targets is a Maven/Gradle/none concern there, and it
-          # takes no caller input for Go.
+          # tree -- go.list or go.sum, per go_scan_target -- and the
+          # Python path the directory of artefacts it resolved. Neither
+          # takes caller input: scan_targets is a Maven/Gradle/none
+          # concern, and pointing either at the source tree instead
+          # would scan manifests rather than what resolved.
           # yamllint disable-line rule:line-length
-          scan_targets: ${{ inputs.build_type == 'go' && format('{0}/go.{1}', inputs.path_prefix, inputs.go_scan_target) || inputs.scan_targets }}
+          scan_targets: ${{ inputs.build_type == 'go' && format('{0}/go.{1}', inputs.path_prefix, inputs.go_scan_target) || inputs.build_type == 'python' && format('{0}/.python-deps', inputs.path_prefix) || inputs.scan_targets }}
           advanced_properties: ${{ inputs.advanced_properties }}
           ignore_scanning_errors: ${{ inputs.ignore_scanning_errors }}
           ignore_system_errors: ${{ inputs.ignore_system_errors }}
