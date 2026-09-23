@@ -50,8 +50,10 @@ jobs:
     #                               # go.list from what the build resolves;
     #                               # 'sum' scans the tidied go.sum (legacy
     #                               # Jenkins parity)
-    #   scan_targets: '.'           # file(s)/folder(s); ignored for 'go',
-    #                               # which scans go.list, go.sum or an SBOM
+    #   scan_targets: '.'           # file(s)/folder(s); ignored for 'go'
+    #                               # and 'python', which scan what they
+    #                               # resolved: go.list, go.sum, an SBOM,
+    #                               # or the .python-deps directory
     #   harden_runner_egress: 'block'
     secrets:
       nexus_iq_password: ${{ secrets.NEXUS_IQ_PASSWORD }}

@@ -116,7 +116,12 @@ on:
         type: string
         default: ''
       scan_targets:
-        description: 'File(s) or folder(s) to scan'
+        description: >-
+          File(s) or folder(s) to scan. Ignored for build_type 'go'
+          and 'python', which always scan what they resolved -- the
+          file go_scan_target names, or the .python-deps directory --
+          so that pointing either at the source tree cannot swap a
+          resolved graph for a manifest scan.
         required: false
         type: string
         default: '.'
@@ -273,8 +278,9 @@ on:
       scan_mode:
         description: >-
           How results reach Nexus IQ: 'cli' runs the Nexus IQ CLI's
-          build analyser against scan_targets (or, for Go, the file
-          go_scan_target names). 'sbom' instead generates a CycloneDX
+          build analyser against scan_targets (or, for Go and Python,
+          what the build type resolved; see scan_targets). 'sbom'
+          instead generates a CycloneDX
           SBOM and uploads it
           through the Nexus IQ REST API directly, bypassing the CLI
           entirely -- mirroring legacy Jenkins Go CLM jobs with
@@ -1043,6 +1049,13 @@ jobs:
                 "${pip[@]}" -r "${exported}" || return 1
                 ;;
               'project metadata')
+                # pip saves only what it fetches, and the project is a
+                # local directory rather than something fetched, so its
+                # own artefact never lands in .python-deps: only the
+                # dependencies do. Verified: a dependency-free project
+                # leaves the directory empty and fails the check below,
+                # and ric-plt-xapp-frame-py yields its 18 dependencies
+                # with no ricxappframe artefact among them.
                 "${pip[@]}" . || return 1
                 ;;
             esac
