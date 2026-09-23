@@ -240,6 +240,15 @@ check 'the scan targets the resolved directory for python' \
   grep -qF "inputs.build_type == 'python' && format('{0}/.python-deps'" \
   "${root}/.github/workflows/${clm}"
 
+# The assertion testing.yaml runs after each submodule scan leg. It
+# decides pass or fail for those legs, so a regression in it would pass
+# every leg it guards; its own cases stub the server offline.
+echo '== submodule scan assertion (tests/scan_contents.py)'
+# As a module from the repository root, so its relative import resolves
+# to tests/ and nothing else on sys.path.
+scan_contents_cases() { (cd -- "${root}" && python3 -m tests.test_scan_contents); }
+check 'scan_contents.py cases all hold' scan_contents_cases
+
 echo
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} of ${cases} cases FAILED"
