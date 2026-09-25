@@ -240,6 +240,55 @@ check 'the scan targets the resolved directory for python' \
   grep -qF "inputs.build_type == 'python' && format('{0}/.python-deps'" \
   "${root}/.github/workflows/${clm}"
 
+# The Scorecard API re-verifies this file on every publish, and a
+# rejection surfaces only as a warning in a green job, so a regression
+# here goes unseen. These mirror the API's checks on the scan job; see
+# verify_workflow.go in ossf/scorecard-infra.
+echo '== publish restrictions (openssf-scorecard scan)'
+scorecard="${root}/.github/workflows/openssf-scorecard.yaml"
+# The API applies every check below to whichever job runs
+# ossf/scorecard-action, and rejects the file if none does. Anchor them
+# by requiring that job to be 'scan', and the only one.
+scorecard_jobs="$(yq '[.jobs | to_entries[]
+  | select(.value.steps[].uses // "" | test("^ossf/scorecard-action@"))
+  | .key] | unique | join(",")' "${scorecard}")"
+check "scan is the one job running ossf/scorecard-action ('${scorecard_jobs}')" \
+  test "${scorecard_jobs}" = scan
+runs_on="$(yq '.jobs.scan."runs-on" | select(tag == "!!str")' "${scorecard}")"
+# isSupportedUbuntuRunner: the pattern, then a floor of 22.04 for any
+# versioned label. The pattern fixes the width at NN.NN, so dropping
+# the dot gives the same order as the verifier's string comparison.
+hosted_ubuntu() {
+  [[ "$1" =~ ^ubuntu-(latest|[0-9]{2}\.[0-9]{2})(-arm)?$ ]] || return 1
+  local version="${BASH_REMATCH[1]}"
+  [ "${version}" = latest ] || (( 10#${version/./} >= 2204 ))
+}
+not_hosted_ubuntu() { ! hosted_ubuntu "$1"; }
+check "runs-on is a literal hosted Ubuntu label ('${runs_on}')" \
+  hosted_ubuntu "${runs_on}"
+for label in ubuntu-latest ubuntu-22.04 ubuntu-24.04-arm; do
+  check "  the check accepts '${label}'" hosted_ubuntu "${label}"
+done
+for label in ubuntu-20.04 ubuntu-latest-8-cores ubuntu-buildbox; do
+  check "  the check rejects '${label}'" not_hosted_ubuntu "${label}"
+done
+# Parenthesised: yq binds '|' looser than 'or', so without them only
+# the first key would be tested against the job.
+check 'scan job declares no env or defaults' test \
+  "$(yq '.jobs.scan | (has("env") or has("defaults"))' "${scorecard}")" = false
+check 'scan job declares no container or services' test \
+  "$(yq '.jobs.scan | (has("container") or has("services"))' "${scorecard}")" = false
+check 'the scan job holds id-token: write, which publishing needs' test \
+  "$(yq '.jobs.scan.permissions."id-token"' "${scorecard}")" = write
+check 'no other job holds id-token: write' test "$(yq \
+  '[.jobs | to_entries[] | select(.key != "scan")
+    | select(.value.permissions."id-token" == "write")] | length' \
+  "${scorecard}")" = 0
+unpermitted="$(yq '.jobs.scan.steps[] | (.uses // "(run step)") | sub("@.*", "")' \
+  "${scorecard}" | grep -vxE 'actions/(checkout|create-github-app-token|upload-artifact)|ossf/scorecard-action|github/codeql-action/upload-sarif|step-security/harden-runner' || true)"
+check "scan job uses only permitted actions${unpermitted:+ (not: ${unpermitted//$'\n'/, })}" \
+  test -z "${unpermitted}"
+
 echo
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} of ${cases} cases FAILED"
