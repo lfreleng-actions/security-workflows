@@ -348,7 +348,8 @@ them out.
 
 The scan job's `runs-on` is a literal `ubuntu-latest`, and there is no
 runner input. The API reads the label from this file as written, through
-actionlint, and matches it against `^ubuntu-(latest|NN.NN)(-arm)?$`; it
+actionlint, and matches it against `^ubuntu-(latest|NN.NN)(-arm)?$`,
+requiring any versioned label to be at least `22.04`; it
 does not evaluate expressions. An earlier `runs_on` input, validated in
 the `validate` job, therefore made every publish fail with HTTP 400
 ("scorecard job should have exactly 1 'Ubuntu' virtual environment")

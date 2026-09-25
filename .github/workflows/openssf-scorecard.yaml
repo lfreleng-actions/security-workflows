@@ -266,7 +266,8 @@ jobs:
     needs: validate
     # Must stay a literal: the Scorecard API reads this label from the
     # file and rejects the publish (HTTP 400, surfaced only as a
-    # warning) unless it matches ^ubuntu-(latest|NN.NN)(-arm)?$.
+    # warning) unless it matches ^ubuntu-(latest|NN.NN)(-arm)?$ and any
+    # NN.NN is at least 22.04.
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
