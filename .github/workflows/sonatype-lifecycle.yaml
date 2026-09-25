@@ -25,9 +25,10 @@
 # Both mirror the two branches ONAP's legacy Jenkins Go CLM jobs picked
 # between via nexus-iq-use-cli; 'sbom' exists only for parity with
 # projects that ran that branch, since it forgoes the policy gating
-# 'cli' has (see scan_mode's own description). scan_mode is not itself
-# Go-specific -- any ecosystem this lane can produce a CycloneDX SBOM
-# for could reuse it -- but only the Go path drives it today.
+# 'cli' has (see scan_mode's own description). Only the Go path
+# drives 'sbom', and it stays that way: a syft-generated SBOM matches
+# the same modules but scans more than the build uses, and every other
+# build_type has a CLI path that can gate on policy (BRIEF D25).
 #
 # The build JDK and the Nexus IQ CLI runtime JDK are configured
 # INDEPENDENTLY. IQ CLI 2.x requires Java 17, while projects frequently
@@ -280,12 +281,11 @@ on:
           How results reach Nexus IQ: 'cli' runs the Nexus IQ CLI's
           build analyser against scan_targets (or, for Go and Python,
           what the build type resolved; see scan_targets). 'sbom'
-          instead generates a CycloneDX
-          SBOM and uploads it
-          through the Nexus IQ REST API directly, bypassing the CLI
-          entirely -- mirroring legacy Jenkins Go CLM jobs with
-          nexus-iq-use-cli: false. Only the Go path drives 'sbom'
-          today, via cyclonedx-gomod. 'sbom' cannot gate on policy: the
+          instead generates a CycloneDX SBOM and uploads it through the
+          Nexus IQ REST API directly, bypassing the CLI entirely --
+          mirroring legacy Jenkins Go CLM jobs with nexus-iq-use-cli:
+          false. Go only, via cyclonedx-gomod; any other build_type is
+          rejected (BRIEF D25). 'sbom' cannot gate on policy: the
           upload is fire-and-forget, so fail_on_policy_warnings,
           ignore_scanning_errors, ignore_system_errors, iq_cli_version,
           iq_java_version and iq_java_distribution all have no effect
@@ -317,9 +317,10 @@ on:
         # Not a commit-SHA pin like the uses: steps below: go install
         # resolves this through the module proxy, checksum-verified
         # against GOSUMDB rather than pinned to a specific content
-        # hash in this file. Tightening further only makes sense if
-        # cyclonedx-gomod stays in-lane rather than moving behind
-        # sbom-action's own SHA pin (see issue #40).
+        # hash in this file. cyclonedx-gomod stays in-lane rather than
+        # moving behind sbom-action's SHA pin: sbom-action's syft
+        # backend scans go.sum and a thinner dependency graph, and it
+        # has no cyclonedx-gomod backend to switch to (BRIEF D25).
 
       # --- Maven settings.xml synthesis (optional) ---
       # Supplying maven_server_ids turns these on. The lane then builds a
@@ -599,7 +600,7 @@ jobs:
           BUILD_TYPE: ${{ inputs.build_type }}
           SCAN_MODE: ${{ inputs.scan_mode }}
         run: |
-          # Only build_type: go drives 'sbom' today, but validated
+          # Only build_type: go drives 'sbom', but validated
           # unconditionally like build_type itself.
           case "${SCAN_MODE}" in
             cli | sbom) ;;
@@ -612,10 +613,13 @@ jobs:
           # Every 'sbom'-mode step is gated on build_type == 'go'; a
           # non-Go build_type would pass validation, generate and
           # upload nothing, then silently fall through to a CLI scan
-          # instead. Remove once #40 generalises 'sbom' beyond Go.
+          # instead. A standing restriction, not a placeholder: every
+          # other build_type has a CLI path, which can gate on policy
+          # where an SBOM upload cannot (BRIEF D25).
           if [ "${SCAN_MODE}" = 'sbom' ] && [ "${BUILD_TYPE}" != 'go' ]; then
-            echo "::error::scan_mode 'sbom' currently requires" \
-              "build_type 'go' (received build_type: '${BUILD_TYPE}')"
+            echo "::error::scan_mode 'sbom' requires build_type 'go'" \
+              "(received build_type: '${BUILD_TYPE}'); use" \
+              "scan_mode 'cli' for other build types"
             exit 1
           fi
 
