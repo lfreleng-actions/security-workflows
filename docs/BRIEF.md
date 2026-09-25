@@ -532,11 +532,9 @@ Go-specific — it resolves an application UUID and `POST`s a CycloneDX
 document, which any ecosystem this lane can produce one for could
 reuse — so it was renamed to `scan_mode` before merge, while it still
 only had one caller and renaming cost nothing. Only the Go path drives
-`sbom` today; generalising the mechanism to other ecosystems, adopting
-`lfreleng-actions/sbom-action` in place of a hand-rolled
-`cyclonedx-gomod` call, and verifying Nexus IQ ingests syft-generated
-CycloneDX as well are tracked separately (issues #39 and #40) rather
-than folded into this decision.
+`sbom`, and D25 records why it stays that way: syft-generated
+CycloneDX was checked against `cyclonedx-gomod` and does not replace
+it, and every other build type has a CLI path that can gate on policy.
 
 That same review surfaced that Sonatype's own guidance has moved.
 Their [Go Application Analysis][go-app-analysis] page, last modified
@@ -781,6 +779,72 @@ resolution that silently fetched nothing.
 uv provisions the interpreter, so the lane needs no `setup-python`,
 and supplies `uv export` for lock files; pip does the resolving,
 because uv has no download command.
+
+### D25 — The Go SBOM stays on `cyclonedx-gomod`
+
+D20 left open whether `lfreleng-actions/sbom-action`, which wraps
+syft, could replace the lane's hand-installed `cyclonedx-gomod`, and
+with it generalise `scan_mode: 'sbom'` to every ecosystem (issues #39
+and #40). It cannot, for Go, and generalising is not needed.
+
+Checked 2026-09-25 with the exact generators each path would run:
+`cyclonedx-gomod` v1.10.0, the lane's pin, and syft v1.51.1, the
+default of the `download-syft` step `sbom-action` v0.2.0 pins. Both ran
+on `lfreleng-actions/test-go-project` and on `onap/policy-opa-pdp`,
+the lane's one real `sbom`-mode caller. Every Go package URL each
+emitted was then looked up in Nexus IQ through its read-only
+component-details API, which creates no application and no report.
+
+**Identification is identical.** Of the 80 modules both generators
+report for `policy-opa-pdp`, all 80 are matched the same way, with
+the same vulnerabilities and licences, and both find the same four
+distinct vulnerabilities. `cyclonedx-gomod` appends `goos`, `goarch`
+and `type` qualifiers to each package URL and syft does not; Nexus IQ
+echoes each back without them, so they do not affect matching.
+
+**Scope is not.** syft reads `go.sum`: it reports 23 more modules
+for `policy-opa-pdp`, none of which is in the project's build or
+test graph, and four of which Nexus IQ cannot identify. That is the
+over-reporting D23 moved the CLI path away from. It also catalogues
+the project's own GitHub Actions from `.github/workflows` as
+components — 17 entries there — and describes the root module by a
+package URL with no version, which the component-details API rejects
+with HTTP 400.
+
+**The dependency graph is thinner.** `cyclonedx-gomod` records 392
+dependency edges for `policy-opa-pdp` under a root component naming
+the application; syft records 240, across 56 dependency entries,
+under a root that is the scanned directory. Direct and transitive
+attribution in the Application Composition Report rests on that
+graph. How Nexus IQ renders the thinner one was not checked, since
+that needs an upload; it could only confirm the result, not reverse
+it.
+
+So syft would not be a like-for-like replacement for Go: it would
+widen the scanned set past what the application uses, add CI actions
+to a CLM application, and weaken attribution. `sbom-action` has no
+`cyclonedx-gomod` backend — its `cyclonedx` backend drives the Maven
+and Gradle plugins — so there is nothing to switch to without first
+building one.
+
+Generalising `sbom` to other ecosystems has no remaining driver. It
+was proposed for "Python and Node.js projects wanting CLM coverage";
+Python now has a CLI path (D24), and Node.js projects already run the
+lane's CLI scan. The CLI path is also the better one: `sbom` is
+fire-and-forget, with no synchronous policy verdict, and exists for
+parity with projects migrating off Jenkins's REST branch. So `sbom`
+stays Go-only, and the validation rejecting it for any other
+`build_type` is a standing restriction rather than a placeholder.
+
+One inconsistency is recorded rather than fixed. `cyclonedx-gomod mod`
+excludes test dependencies unless passed `-test`, and the lane does
+not pass it, so `sbom` mode leaves out the test-only modules D23 made
+the CLI path include. On the fixture, whose dependencies are all
+test-only, the SBOM names no dependency at all. Adding `-test` would
+change `policy-opa-pdp`'s results — 81 components to 82 — and that
+project pinned `sbom` precisely so its results would match the
+Jenkins job it replaced. It belongs with any change that project
+agrees to, not in a silent default change.
 
 ### Legacy defects not carried forward
 
