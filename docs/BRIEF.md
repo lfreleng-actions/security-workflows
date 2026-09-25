@@ -346,13 +346,26 @@ no workflow-level write permissions, and `id-token: write` on the scan
 job alone. They reach the *caller* too, which is why the example spells
 them out.
 
-Two things were verified against a live run rather than assumed.
-Publishing does work through the reusable-workflow indirection: the
-Scorecard API returns a current score for this repository, produced by a
-caller plus reusable pair. And `ghcr.io` is deliberately absent from the
-curated allow-list even though `ossf/scorecard-action` is a Docker
-action; the image pull was confirmed to succeed under that exact list,
-so it must not be added speculatively.
+The scan job's `runs-on` is a literal `ubuntu-latest`, and there is no
+runner input. The API reads the label from this file as written, through
+actionlint, and matches it against `^ubuntu-(latest|NN.NN)(-arm)?$`; it
+does not evaluate expressions. An earlier `runs_on` input, validated in
+the `validate` job, therefore made every publish fail with HTTP 400
+("scorecard job should have exactly 1 'Ubuntu' virtual environment")
+whatever value the caller passed. `ossf/scorecard-action` reports that
+rejection as a warning and exits 0, so the scan job stayed green while
+no caller, this repository included, published a result. The same
+verifier also rejects the larger-runner `-N-cores` labels, so a runner
+input would have nothing to offer even if expressions were evaluated.
+`tests/workflow-steps.sh` asserts the literal label and the permitted
+step list, because a green run cannot.
+
+Publishing through the reusable-workflow indirection works: the API
+fetches the reusable workflow named in the OIDC certificate, at the ref
+the caller pinned, and verifies that file rather than the caller.
+`ghcr.io` is deliberately absent from the curated allow-list even though
+`ossf/scorecard-action` is a Docker action; the image pull was confirmed
+to succeed under that exact list, so it must not be added speculatively.
 
 There is no `repository` or `ref` input. Scorecard reads
 `GITHUB_REPOSITORY` and queries the GitHub API, so checking out a

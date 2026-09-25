@@ -24,8 +24,12 @@
 #     why input validation lives in its own job rather than in a step.
 #   * No workflow-level write permissions, and only the scan job may
 #     hold id-token: write.
-#   * The scan job must run on an Ubuntu hosted runner, so runs_on is
-#     validated rather than accepted as-is.
+#   * The scan job must run on a GitHub-hosted Ubuntu runner, and the
+#     API checks this by reading the runs-on label from this file as
+#     written. It does not evaluate expressions, so an input-driven
+#     'runs-on: ${{ inputs.runs_on }}' is rejected whatever value the
+#     caller passes. The label is therefore a literal and there is no
+#     runner input; tests/workflow-steps.sh holds the line.
 #
 # NO GERRIT SUPPORT, and this is not an omission. A Gerrit checkout
 # action cannot appear in the scan job under the rules above, and
@@ -116,14 +120,7 @@ on:
         type: boolean
         default: true
 
-      # --- Runner selection and timeout ---
-      runs_on:
-        description: >-
-          Runner for the scan job. Must be an Ubuntu hosted runner;
-          the Scorecard API rejects results produced anywhere else.
-        required: false
-        type: string
-        default: 'ubuntu-latest'
+      # --- Timeout ---
       timeout_minutes:
         description: 'Timeout (minutes) for the scan job'
         required: false
@@ -213,29 +210,6 @@ jobs:
             exit 1
           fi
 
-      - name: 'Validate runs_on input'
-        shell: bash
-        env:
-          RUNS_ON: ${{ inputs.runs_on }}
-        run: |
-          # The Scorecard API rejects results from anything other than
-          # an Ubuntu hosted runner when publishing. A bare 'ubuntu-'
-          # prefix check is not enough: a self-hosted label may be
-          # named anything, including 'ubuntu-buildbox', and would pass
-          # here only to be rejected by the API after a full analysis.
-          # Match the documented hosted label forms instead, allowing
-          # the -arm and larger-runner -N-cores variants.
-          if ! [[ "${RUNS_ON}" =~ \
-            ^ubuntu-(latest|[0-9]{2}\.[0-9]{2})(-arm)?(-[0-9]{1,3}-cores)?$ ]]
-          then
-            echo "::error::runs_on must be a GitHub-hosted Ubuntu" \
-              "runner label, for example ubuntu-latest, ubuntu-24.04," \
-              "ubuntu-24.04-arm or ubuntu-latest-8-cores; the" \
-              "Scorecard API rejects results produced elsewhere" \
-              "(received: '${RUNS_ON}')"
-            exit 1
-          fi
-
       - name: 'Validate extra_allowed_endpoints input'
         shell: bash
         env:
@@ -290,7 +264,10 @@ jobs:
   scan:
     name: 'Scan'
     needs: validate
-    runs-on: ${{ inputs.runs_on }}
+    # Must stay a literal: the Scorecard API reads this label from the
+    # file and rejects the publish (HTTP 400, surfaced only as a
+    # warning) unless it matches ^ubuntu-(latest|NN.NN)(-arm)?$.
+    runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
       contents: read  # checkout
