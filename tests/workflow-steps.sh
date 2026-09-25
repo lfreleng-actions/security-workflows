@@ -240,6 +240,26 @@ check 'the scan targets the resolved directory for python' \
   grep -qF "inputs.build_type == 'python' && format('{0}/.python-deps'" \
   "${root}/.github/workflows/${clm}"
 
+# The Scorecard API re-verifies this file on every publish, and a
+# rejection surfaces only as a warning in a green job, so a regression
+# here goes unseen. These mirror the API's checks on the scan job; see
+# verify_workflow.go in ossf/scorecard-infra.
+echo '== publish restrictions (openssf-scorecard scan)'
+scorecard="${root}/.github/workflows/openssf-scorecard.yaml"
+runs_on="$(yq '.jobs.scan."runs-on" | select(tag == "!!str")' "${scorecard}")"
+check "runs-on is a literal hosted Ubuntu label ('${runs_on}')" \
+  grep -qxE 'ubuntu-(latest|[0-9]{2}\.[0-9]{2})(-arm)?' <<< "${runs_on}"
+check 'scan job declares no env or defaults' test \
+  "$(yq '.jobs.scan | has("env") or has("defaults")' "${scorecard}")" = false
+check 'no other job holds id-token: write' test "$(yq \
+  '[.jobs | to_entries[] | select(.key != "scan")
+    | select(.value.permissions."id-token" == "write")] | length' \
+  "${scorecard}")" = 0
+unpermitted="$(yq '.jobs.scan.steps[] | (.uses // "(run step)") | sub("@.*", "")' \
+  "${scorecard}" | grep -vxE 'actions/(checkout|create-github-app-token|upload-artifact)|ossf/scorecard-action|github/codeql-action/upload-sarif|step-security/harden-runner' || true)"
+check "scan job uses only permitted actions${unpermitted:+ (not: ${unpermitted//$'\n'/, })}" \
+  test -z "${unpermitted}"
+
 echo
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} of ${cases} cases FAILED"
