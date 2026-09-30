@@ -48,3 +48,5 @@ paths:
       - 'reusable workflow call "\$/\.github/workflows/codeql\.yaml" at "uses" is not following the format'
       # yamllint disable-line rule:line-length
       - 'reusable workflow call "\$/\.github/workflows/action\-pin\-audit\.yaml" at "uses" is not following the format'
+      # yamllint disable-line rule:line-length
+      - 'reusable workflow call "\$/\.github/workflows/assert\-submodule\-scan\.yaml" at "uses" is not following the format'

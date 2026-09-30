@@ -1,0 +1,121 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# INTERNAL. Called by testing.yaml only, and not part of the published
+# lane interface: it checks which submodule levels of the
+# test-python-submodules fixture reached a scan's result, by querying
+# the server the scan wrote to. See tests/scan_contents.py.
+#
+# Called twice per scan. Before it, mode 'baseline' records the newest
+# result the server already holds. After it, mode 'assert' requires a
+# result with a different identity that is strictly newer by the
+# server's own clock, then checks its content. The runner's clock is
+# never consulted, so neither clock skew nor a truncated timestamp can
+# let an older result pass as this scan's.
+#
+# A reusable workflow rather than inline jobs, so the credentials it
+# needs arrive as declared workflow_call secrets that the caller hands
+# over explicitly, which is how every lane receives them, instead of
+# being read from repository-wide secrets inside an ad hoc job.
+name: 'Assert submodule scan contents (internal)'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "'baseline' before a scan, 'assert' after it"
+        required: true
+        type: string
+      server:
+        description: "Where the scan writes: 'nexus-iq' or 'sonar'"
+        required: true
+        type: string
+      subject:
+        description: >-
+          Nexus IQ application public ID, or SonarCloud project key
+        required: true
+        type: string
+      after:
+        description: >-
+          For 'assert': the 'seen' output of the baseline taken before
+          this scan, or of the previous assert on the same subject
+        required: false
+        type: string
+        default: ''
+      present:
+        description: "For 'assert': comma-separated markers that must appear"
+        required: false
+        type: string
+        default: ''
+      absent:
+        description: "For 'assert': comma-separated markers that must not"
+        required: false
+        type: string
+        default: ''
+    secrets:
+      nexus_iq_password:
+        description: 'Nexus IQ password, for server nexus-iq'
+        required: false
+      sonar_token:
+        description: 'SonarCloud token, for server sonar'
+        required: false
+    outputs:
+      seen:
+        description: >-
+          The server's identity for the newest result: the baseline's,
+          or the one an assert confirmed. Pass it as the next call's
+          'after' so that call cannot read this result again.
+        value: ${{ jobs.check.outputs.seen }}
+
+permissions: {}
+
+jobs:
+  check:
+    name: 'Check'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      seen: ${{ steps.check.outputs.seen }}
+    steps:
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every input reaches the script through env and argv, never by
+      # interpolation into the run block, so a value cannot change the
+      # command. The script itself refuses anything but an https:// server.
+      - name: 'Query the server'
+        id: check
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode }}
+          SERVER: ${{ inputs.server }}
+          SUBJECT: ${{ inputs.subject }}
+          AFTER: ${{ inputs.after }}
+          PRESENT: ${{ inputs.present }}
+          ABSENT: ${{ inputs.absent }}
+          NEXUS_IQ_SERVER: ${{ vars.NEXUS_IQ_SERVER }}
+          NEXUS_IQ_USERNAME: ${{ vars.NEXUS_IQ_USERNAME }}
+          NEXUS_IQ_PASSWORD: ${{ secrets.nexus_iq_password }}
+          SONAR_TOKEN: ${{ secrets.sonar_token }}
+        run: |
+          set -euo pipefail
+          args=("${MODE}" "${SERVER}" --subject "${SUBJECT}" \
+            --output "${GITHUB_OUTPUT}")
+          if [ "${MODE}" = 'assert' ]; then
+            args+=(--after "${AFTER}" --present "${PRESENT}" \
+              --absent "${ABSENT}")
+          fi
+          python3 tests/scan_contents.py "${args[@]}"
