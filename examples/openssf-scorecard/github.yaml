@@ -80,6 +80,5 @@ jobs:
     #   results_format: 'sarif'     # 'json' is API-only, no dashboard
     #   file_mode: 'archive'        # or 'git'
     #   summary_enabled: true       # adds a link to the published report
-    #   runs_on: 'ubuntu-latest'    # must be an Ubuntu hosted runner
     #   harden_runner_egress: 'block'
     #   extra_allowed_endpoints: '' # widen the scan job's curated list
