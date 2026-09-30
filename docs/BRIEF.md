@@ -619,10 +619,12 @@ Checked 2026-08 against `setup-go` v6.5.0 and v7.0.0,
 `build-metadata-action` v0.8.0, and Go 1.24.3 for the runtime
 behaviour above. Both lanes now publish the Go version they
 resolved, and `testing.yaml` compares each against the fixture's
-`go.mod`: a mismatch, or a lane reporting no version, fails. No
-fixture carries a `toolchain` directive yet, so until one does the
-check warns and records the gap in the job summary rather than
-asserting an equality that cannot distinguish anything (#75).
+`go.mod`: a mismatch, or a lane reporting no version, fails.
+`test-go-project` declares `go 1.25` and `toolchain go1.25.0`, so the
+two directives differ and the check can tell a correct resolution from
+the suppressed one (#75). Should a fixture ever drop its `toolchain`
+directive, the check warns and records the gap in the job summary
+rather than asserting an equality that could not distinguish anything.
 
 ### D22 — The build names the coverage it measured
 

@@ -20,15 +20,18 @@ repository can be called done for ONAP, O-RAN-SC and OpenDaylight.
 All seven lanes from the BRIEF's inventory are ported and shipping:
 `sonatype-lifecycle`, `sonarqube-cloud`, `zizmor`, `openssf-scorecard`,
 `package-hardening-audit`, `codeql` and `action-pin-audit`, each with
-GitHub and (where the posture allows) Gerrit examples.
+GitHub and (where the posture allows) Gerrit examples. One of them has
+never done its job: `openssf-scorecard` runs green but has never
+published a result, which PR #116 fixes (see Immediate, below).
 
-Between v0.3.0 and v0.9.1 the cycle closed **20 issues** across twelve
-releases, and **no issue is open**. All seven open when the previous
-revision was written are closed, as is every issue raised since. The
-last two, #39 and #40 on the SBOM transport, closed as a decision
-rather than a feature (D25). What remains is not tracked as issues:
-it is proving the lanes against live servers, rolling them out, and
-the structural work below.
+Between v0.3.0 and v0.9.1 the cycle published twelve releases. Across
+the same period **20 issues** closed, and **no issue is open**: the
+last, #74, closed when PR #114 merged after v0.9.1 was tagged, so it
+waits for v0.9.2. All seven issues open when the previous revision was
+written are closed, as is every issue raised since. #39 and #40 on the
+SBOM transport closed as a decision rather than a feature (D25). What
+remains is not tracked as issues: it is proving the lanes against
+live servers, rolling them out, and the structural work below.
 
 The two scan lanes gained, in outline:
 
@@ -46,21 +49,24 @@ The two scan lanes gained, in outline:
   (D25).
 
 Self-testing changed shape. `tests/workflow-steps.sh` runs on every
-pull request via `workflow-tests.yaml`, extracting the lanes'
-validation and hook steps verbatim with `yq` and executing them against
-generated inputs — 70 cases on `main`, with mutation testing used to
-prove each check can fail. `testing.yaml` gained credentialled legs
-that scan a submodule fixture through both lanes and ask the servers
-which levels arrived (#74). Both were a response to a finding covered
-below: `testing.yaml` itself is dispatch-only and has never been
-dispatched.
+pull request that changes a workflow or a test, via
+`workflow-tests.yaml`, extracting the lanes' validation and hook steps
+verbatim with `yq` and executing them against generated inputs — 70
+cases on `main`. It covers those steps only, not the build or scan
+steps, and mutation testing was applied to a sample of its checks to
+confirm they can fail rather than to all of them. `testing.yaml` gained
+credentialled legs that scan a submodule fixture through both lanes and
+ask the servers which levels arrived (#74). Both were a response to a
+finding covered below: `testing.yaml` itself is dispatch-only and has
+never been dispatched.
 
 ## Adoption
 
 The previous revision sequenced deployment as ONAP first, then
 O-RAN-SC and OpenDaylight after the ONAP wave. Adoption overtook that
 plan. A GitHub code search on 2026-09-30 finds **55 repositories**
-outside this organisation calling the lanes, from 61 workflow files:
+outside this organisation calling the lanes: **63 calls** from 61
+workflow files:
 
 | Org          | Lane                 | Repositories |
 | ------------ | -------------------- | ------------ |
@@ -74,14 +80,16 @@ OpenDaylight onboarded its Sonar estate in parallel with ONAP rather
 than after it. O-RAN-SC has not started.
 
 The pins are spread across five releases, and the oldest is still
-among the largest groups:
+among the largest groups. The table counts calls, not files: every
+reusable-workflow `uses:` line, with each file read in full, because
+two files call the lanes twice:
 
 | Pinned release | Calls |
 | -------------- | ----- |
 | v0.3.0         | 18    |
-| v0.5.0         | 3     |
+| v0.5.0         | 4     |
 | v0.7.0         | 19    |
-| v0.8.0         | 16    |
+| v0.8.0         | 17    |
 | v0.9.0         | 5     |
 
 **18 calls are still pinned to v0.3.0**, the release the previous
@@ -181,8 +189,9 @@ on, and one got worse.
 **1. Inline shell in the CLM lane grew rather than shrank.** The
 previous revision counted ~50 lines of SBOM generation and Nexus IQ
 REST upload shell and called for extraction. Since then the lane's
-`run:` blocks went from 127 lines across 9 steps (v0.3.0) to 323 lines
-across 15, and the file from 769 to 1,184 lines. Much of the growth is
+`run:` blocks went from 127 lines across 9 steps (v0.3.0) to 326 lines
+across 15, and the file from 769 to 1,188 lines, as measured on `main`
+on 2026-09-30. Much of the growth is
 justified validation — the checks the per-PR harness now tests — and
 the Python resolution step, but the REST upload the previous revision
 singled out is still inline, and no extraction has started. The
@@ -209,22 +218,29 @@ No issue is open. The last three closed this week:
 - **#39 and #40 (PR #115).** See D25 and "Where the plan was wrong"
   above.
 
-The work that remains is not a backlog of defects. It is proving what
-shipped against live servers, rolling it out, and the structural
-improvements below, none of which has an issue yet.
+The work that remains is not a backlog of issues. One caller-facing
+defect is outstanding: the Scorecard lane has never published a
+result, which open PR #116 fixes and which leads the remaining work.
+The rest is proving what shipped against live servers, rolling it
+out, and the structural improvements below, none of which has an
+issue yet.
 
 ## Remaining work
 
 ```mermaid
 graph TD
+    I0["Merge PR #116"]
     I1["Provision the fixture's Sonar project and IQ application"]
-    I2["Dispatch testing.yaml end to end"]
-    I3["Publish v0.9.2 (#114)"]
+    I2["Dispatch testing.yaml end to end, settling the IQ credential"]
+    I3["Publish v0.9.2 (#114, #116)"]
+    I4["Prove Scorecard publishes"]
     R1["Bump the 18 v0.3.0 callers"]
     R2["O-RAN-SC onboarding"]
     A1["Extract the Nexus IQ upload action"]
     B1["build-artifact-action"]
     B2["CLM lane artifact_name input"]
+    I0 --> I3
+    I3 --> I4
     I1 --> I2
     I2 --> R2
     A1 --> B2
@@ -236,32 +252,54 @@ graph TD
 This is the most important section of the document. The credentialled
 self-test has never verified the lanes it covers.
 
-1. **Dispatch `testing.yaml` and make it pass.** It has run six times
+1. **Merge PR #116.** It corrects a caller-facing defect, not a test
+   gap: the `openssf-scorecard` lane has never published a result. The
+   Scorecard API re-verifies the producing workflow from the file as
+   written, rejects the lane's expression-valued `runs-on`, and
+   `ossf/scorecard-action` logs that as a warning and exits 0, so every
+   run is green while nothing reaches the dashboard — for this
+   repository and for ONAP callers such as `onap/cps` alike. Callers
+   receive the fix in v0.9.2 (item 4), and proof of publication
+   follows that release (item 5).
+2. **Provision the submodule fixture's server-side projects** before
+   the dispatch in item 3: a SonarCloud project
+   `lfreleng-actions_test-python-submodules` and a Nexus IQ application
+   `lfreleng-actions-test-python-submodules`. Neither exists as of
+   2026-09-30. The #74 legs fail at their first assertion until both
+   do, naming which is missing.
+3. **Dispatch `testing.yaml` and make it pass.** It has run six times
    ever, all on 2026-07-28, before it became dispatch-only, and not
    once since. The fixture applications on the Nexus IQ server show
    the consequence: the Go and Python applications hold **zero**
    reports, and the Maven and Node applications do not exist. So none
    of its credentialled legs — including every assertion added this
    cycle — has completed a scan in its current form. The per-PR harness
-   proves the lanes' logic; only a dispatch proves they reach the
-   servers. The workflow runs one at a time across all refs and never
+   exercises the lanes' validation and hook steps offline; only a
+   dispatch shows the builds and scans reach the servers. The workflow
+   runs one at a time across all refs and never
    cancels mid-flight, because every leg scans into server-side
    projects shared by every run.
-2. **Provision the submodule fixture's server-side projects** before
-   that dispatch: a SonarCloud project
-   `lfreleng-actions_test-python-submodules` and a Nexus IQ application
-   `lfreleng-actions-test-python-submodules`. Neither exists as of
-   2026-09-30. The #74 legs fail at their first assertion until both
-   do, naming which is missing.
-3. **Settle the Nexus IQ credential.** Locally, the IQ username returns
-   HTTP 401 and only the user code authenticates. CI's
+
+   The first dispatch also settles the Nexus IQ credential, which
+   nothing short of a dispatch can test. Locally, the IQ username
+   returns HTTP 401 and only the user code authenticates. CI's
    `NEXUS_IQ_USERNAME` matches neither local identity, so it is likely
-   a separate service account, and only a dispatch will show whether
-   it authenticates. If it does not, every CLM leg fails at the first
-   request.
+   a separate service account. If it does not authenticate, every CLM
+   leg fails at the first request; correct the secret and dispatch
+   again.
 4. **Publish v0.9.2.** PR #114 is merged but unreleased, waiting in the
-   v0.9.2 draft. It changes only the self-test, so no caller needs it,
-   but tagging it keeps the released tree and the tested one the same.
+   v0.9.2 draft. It changes only the self-test, but tagging it keeps
+   the released tree and the tested one the same. With #116 merged
+   first, the two ship together.
+5. **Prove Scorecard publishes.** After v0.9.2, a caller's run on that
+   release must log no rejection, and the Scorecard API
+   (`api.scorecard.dev/projects/github.com/<org>/<repo>`) must return a
+   fresh result whose date and commit match that run. The API already
+   holds results for `onap/cps` and for this repository, dated before
+   any fix and most likely from OpenSSF's weekly scan, so a result's
+   presence proves nothing. The score itself may not change, so it is
+   not the test. A green run is not proof either, because the defect
+   was green too.
 
 ### Rollout
 
@@ -371,7 +409,8 @@ the new commit, whose action interface is unchanged.
 static analysis of lockfiles and filesystem content, covering Go,
 Node.js, containers and binaries. `cyclonedx`, new since the previous
 revision, drives the CycloneDX project's own build-tool plugins —
-today `cyclonedx-maven-plugin`, with the Gradle plugin to join it —
+today `cyclonedx-maven-plugin` and `cyclonedx-gradle-plugin`, the latter
+added in v0.2.0 with its own `gradle_plugin_version` input —
 because for Java the file syft reads is an input to dependency
 resolution rather than its product. `cyclonedx-npm`, `cyclonedx-gomod`
 and an environment-based Python backend remain planned.
@@ -470,6 +509,11 @@ repositories is by borrowing idioms, not shared code.
   offline or not at all. Until `testing.yaml` passes end to end, the
   lanes' behaviour against Nexus IQ and SonarCloud is inferred, not
   observed. This is the highest-priority item in the document.
+- **A green run is not a delivered result.** The Scorecard lane shows
+  this in production: every run succeeded while no result was ever
+  published (PR #116). It is the D12 failure mode at lane level, and a
+  reason to check each lane's output at its destination rather than
+  trusting the job's conclusion.
 - **The submodule legs depend on provisioning.** They need a
   SonarCloud project and a Nexus IQ application that do not exist yet,
   and fail loudly, naming the missing one, until both do. The first
@@ -478,10 +522,12 @@ repositories is by borrowing idioms, not shared code.
   only the callers that bump. With 18 calls on v0.3.0, the effective
   security posture of the estate lags the repository by a cycle.
 - **Inline shell keeps growing.** Each new capability has added to
-  `sonatype-lifecycle.yaml`. The per-PR harness contains the risk but
-  not the size; the Nexus IQ upload extraction is the natural first
-  cut.
-- **Dependency on v0.x sibling actions.** `grype-scan-action` (v0.2.0)
-  and the SBOM actions are young. Borrow their idioms; do not couple to
-  unreleased pins; re-check each interface before Phase 2 and Phase 4
-  review.
+  `sonatype-lifecycle.yaml`. The per-PR harness covers its validation
+  and hook steps, but not the build and scan steps or the Nexus IQ
+  upload, and none of it reduces the size; the upload extraction is
+  the natural first cut.
+- **The sibling actions are references, not dependencies.** No
+  workflow here uses `grype-scan-action`, `sbom-action` or
+  `python-sbom-action`; the lane borrows their idioms, not their code.
+  Re-read their current interfaces before Phase 2 and Phase 4 review,
+  since both phases copy patterns from them.
