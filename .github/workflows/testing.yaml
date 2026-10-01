@@ -103,8 +103,8 @@ jobs:
   # on a moving default branch they could read different trees: the
   # lanes would report versions resolved from one go.mod while the
   # assertion compares them against another, giving a false mismatch
-  # or a wrong skip. Most likely to bite exactly when the pending
-  # toolchain edit lands, which is when the check starts to matter.
+  # or a wrong skip. The fixture declares a 'toolchain' directive, so
+  # the check is live, and a push to its go.mod mid-run would hit it.
   go-fixture-ref:
     name: 'Resolve Go fixture commit'
     runs-on: ubuntu-latest
@@ -273,9 +273,9 @@ jobs:
   # Cover the non-JVM build path: a different action, a different
   # coverage artefact, and the same continue-on-error plumbing.
   #
-  # NOTE: test-go-project's go.mod declares a 'go' directive and no
-  # 'toolchain' directive, so neither this leg nor the CLM lane's Go
-  # legs exercise toolchain selection at all. See #75.
+  # test-go-project's go.mod declares a 'toolchain' directive beside
+  # its 'go' one, so this leg and the CLM lane's Go legs resolve a
+  # toolchain that assert-go-toolchain can check them against (#75).
   sonarqube-cloud-go:
     name: 'SonarQube Cloud (Go)'
     needs: go-fixture-ref
@@ -573,21 +573,22 @@ jobs:
           if [ -z "${TOOLCHAIN}" ]; then
             # With one directive there are not two answers to tell
             # apart, so an equality check here would pass whatever the
-            # lanes did. Report the gap rather than assert nothing and
-            # call it a pass -- and rather than fail, which would hold
-            # the whole self-test red on a fixture this repository
-            # does not own.
+            # lanes did. The fixture carries a toolchain directive
+            # (#75), so this branch only guards against it losing one:
+            # report the gap rather than assert nothing and call it a
+            # pass -- and rather than fail, which would hold the whole
+            # self-test red on a fixture this repository does not own.
             echo "::warning::test-go-project declares no 'toolchain'" \
               "directive, so this check cannot tell a correct" \
               "resolution from the regression it exists to catch." \
-              "Skipped rather than passed; see issue #75."
+              "Skipped rather than passed; restore the directive."
             {
               echo '### ⚠️ Go toolchain assertion skipped'
               echo
               echo 'The fixture declares one version directive, so'
               echo 'there are not two answers to distinguish. This'
-              echo 'check becomes meaningful once the fixture gains a'
-              echo 'toolchain directive -- see issue #75.'
+              echo 'check is meaningful only while the fixture keeps'
+              echo 'a toolchain directive distinct from its go one.'
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
