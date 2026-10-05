@@ -400,7 +400,7 @@ on:
         required: false
         type: string
         # yamllint disable-line rule:line-length
-        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@ec0736244fc776e326283c6af6840e30f316f63c'  # v0.16.1
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@e0e35011ee145321a51d3226f044ec88dfe645b1'  # v0.16.4
 
       # --- Gerrit-aware checkout (empty unless dispatched via Gerrit) ---
       gerrit_refspec:
@@ -754,7 +754,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: inputs.build_type == 'maven' || inputs.build_type == 'gradle'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/build-metadata-action@37764159ab25aac45d0a04edf78935877c0283f5  # v0.8.2
+        uses: lfreleng-actions/build-metadata-action@ef53139abdf48a63b097efc740202c140571b0d4  # v0.8.3
         with:
           path_prefix: ${{ inputs.path_prefix }}
 
@@ -819,7 +819,7 @@ jobs:
         # yamllint disable-line rule:line-length
         continue-on-error: ${{ inputs.build_permit_fail != false }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/gradle-build-action@1b4ea0f67a3632b0e2fb427fb2af52704ae57849  # v0.6.0
+        uses: lfreleng-actions/gradle-build-action@62e164ecb3db615191f718067a09efca6f2b3057  # v0.7.0
         with:
           # gradle-build-action names this 'path', not 'path_prefix'
           path: ${{ inputs.path_prefix }}
