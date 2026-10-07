@@ -298,6 +298,38 @@ unpermitted="$(yq '.jobs.scan.steps[] | (.uses // "(run step)") | sub("@.*", "")
 check "scan job uses only permitted actions${unpermitted:+ (not: ${unpermitted//$'\n'/, })}" \
   test -z "${unpermitted}"
 
+# GitHub compares each called workflow's job permissions with the
+# calling job's grant when it loads a run, before any 'if:' decides
+# whether those jobs run, and a shortfall in any one leg refuses the
+# whole run at startup. testing.yaml runs only on dispatch, so nothing
+# else would notice; check every leg's grant against its lane here.
+echo '== testing.yaml leg grants (load-time permission check)'
+testing="${root}/.github/workflows/testing.yaml"
+level() { case "$1" in write) echo 2 ;; read) echo 1 ;; *) echo 0 ;; esac; }
+# leg_grants <leg> <lane file>: every scope a job in the lane declares
+# is granted to the leg at the same level or higher. A leg without its
+# own permissions inherits the workflow-level block.
+leg_grants() {
+  local leg="$1" lane="$2" scope want have short=''
+  while IFS='=' read -r scope want; do
+    [ -n "${scope}" ] || continue
+    have="$(LEG="${leg}" SCOPE="${scope}" yq \
+      '(.jobs[strenv(LEG)].permissions // .permissions // {})
+        | .[strenv(SCOPE)] // "none"' "${testing}")"
+    if [ "$(level "${have}")" -lt "$(level "${want}")" ]; then
+      short="${short} ${scope}:${want}"
+    fi
+  done < <(yq '.jobs[].permissions | select(tag == "!!map")
+    | to_entries[] | .key + "=" + .value' "${lane}")
+  [ -z "${short}" ] || echo "    ${leg} lacks${short}"
+  [ -z "${short}" ]
+}
+while read -r leg uses; do
+  check "${leg} grants what ${uses##*/} declares" \
+    leg_grants "${leg}" "${root}/${uses#\$/}"
+done < <(yq '.jobs | to_entries[] | select(.value.uses // "" | test("^\$/"))
+  | .key + " " + .value.uses' "${testing}")
+
 echo
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} of ${cases} cases FAILED"
