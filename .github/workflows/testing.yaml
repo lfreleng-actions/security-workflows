@@ -229,6 +229,15 @@ jobs:
   # anyway, so removing the plumbing leaves this leg green. Proving a
   # NON-default filename travels needs a fixture that has one. The
   # other Maven legs leave the input empty, covering the unset path.
+  #
+  # Every Sonar leg names its project rather than deriving one. With
+  # neither input set, the scan action falls back to the fixture's
+  # sonar-project.properties when it has one, and otherwise derives
+  # owner and name from GITHUB_REPOSITORY -- this repository, not the
+  # fixture -- so two fixtures without a properties file would analyse
+  # into one project named for security-workflows. The keys follow
+  # SonarCloud's '<organization>_<repository>' import convention, as
+  # the submodule legs below do.
   sonarqube-cloud-maven:
     name: 'SonarQube Cloud (Maven)'
     permissions:
@@ -239,6 +248,8 @@ jobs:
       build_type: 'maven'
       mvn_pom_file: 'pom.xml'
       build_permit_egress_traffic: true
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-maven-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -267,6 +278,8 @@ jobs:
       build_type: 'maven'
       analysis_mode: 'cli'
       build_permit_egress_traffic: true
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-maven-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -287,6 +300,8 @@ jobs:
       ref: ${{ needs.go-fixture-ref.outputs.sha }}
       build_type: 'go'
       build_permit_egress_traffic: true
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-go-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -300,6 +315,8 @@ jobs:
     with:
       repository: 'lfreleng-actions/test-node-project'
       build_type: 'none'
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-node-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 

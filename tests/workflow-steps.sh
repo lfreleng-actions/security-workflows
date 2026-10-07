@@ -330,6 +330,17 @@ while read -r leg uses; do
 done < <(yq '.jobs | to_entries[] | select(.value.uses // "" | test("^\$/"))
   | .key + " " + .value.uses' "${testing}")
 
+# Unnamed, a Sonar leg's project is derived from GITHUB_REPOSITORY,
+# which is this repository rather than the fixture under scan.
+echo '== testing.yaml Sonar legs name their project'
+unnamed="$(yq '[.jobs | to_entries[]
+  | select(.value.uses == "$/.github/workflows/sonarqube-cloud.yaml")
+  | select((.value.with.sonar_project_key // "") == ""
+      or (.value.with.sonar_organization // "") == "")
+  | .key] | join(", ")' "${testing}")"
+check "every Sonar leg sets sonar_organization and sonar_project_key${unnamed:+ (not: ${unnamed})}" \
+  test -z "${unnamed}"
+
 echo
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} of ${cases} cases FAILED"
