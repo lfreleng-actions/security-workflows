@@ -229,6 +229,15 @@ jobs:
   # anyway, so removing the plumbing leaves this leg green. Proving a
   # NON-default filename travels needs a fixture that has one. The
   # other Maven legs leave the input empty, covering the unset path.
+  #
+  # Every Sonar leg names its project rather than deriving one. With
+  # neither input set, the scan action falls back to the fixture's
+  # sonar-project.properties when it has one, and otherwise derives
+  # owner and name from GITHUB_REPOSITORY -- this repository, not the
+  # fixture -- so two fixtures without a properties file would analyse
+  # into one project named for security-workflows. The keys follow
+  # SonarCloud's '<organization>_<repository>' import convention, as
+  # the submodule legs below do.
   sonarqube-cloud-maven:
     name: 'SonarQube Cloud (Maven)'
     permissions:
@@ -239,6 +248,8 @@ jobs:
       build_type: 'maven'
       mvn_pom_file: 'pom.xml'
       build_permit_egress_traffic: true
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-maven-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -267,6 +278,8 @@ jobs:
       build_type: 'maven'
       analysis_mode: 'cli'
       build_permit_egress_traffic: true
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-maven-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -287,6 +300,8 @@ jobs:
       ref: ${{ needs.go-fixture-ref.outputs.sha }}
       build_type: 'go'
       build_permit_egress_traffic: true
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-go-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -300,6 +315,8 @@ jobs:
     with:
       repository: 'lfreleng-actions/test-node-project'
       build_type: 'none'
+      sonar_organization: 'lfreleng-actions'
+      sonar_project_key: 'lfreleng-actions_test-node-project'
     secrets:
       sonar_token: ${{ secrets.SONAR_TOKEN }}
 
@@ -307,10 +324,18 @@ jobs:
   # known-clean target, so a finding here means the lane regressed
   # rather than the target did. upload_sarif stays false: publishing is
   # gated to default-branch pushes and this is a workflow_dispatch.
+  #
+  # GitHub checks a called workflow's job permissions against the
+  # caller's grant when it loads the run, before any 'if:' is
+  # evaluated, and refuses to start the whole run on a shortfall. The
+  # lane's 'upload' job declares the two write-side scopes below, so
+  # they are granted here even though that job skips on a dispatch.
   zizmor-self:
     name: 'Zizmor (self)'
     permissions:
       contents: read
+      security-events: write  # declared by the lane's skipped upload
+      actions: read  # declared by the lane's skipped upload job
     uses: $/.github/workflows/zizmor.yaml
 
   # Audit a fixture repository, which also covers the cross-repository
@@ -319,6 +344,8 @@ jobs:
     name: 'Zizmor (fixture)'
     permissions:
       contents: read
+      security-events: write  # declared by the lane's skipped upload
+      actions: read  # declared by the lane's skipped upload job
     uses: $/.github/workflows/zizmor.yaml
     with:
       repository: 'lfreleng-actions/test-python-project'
@@ -343,10 +370,18 @@ jobs:
   # is therefore NOT covered here: publishing is the only thing those
   # rules gate. openssf-scorecard-self.yaml is the integration test for
   # that, and it runs on every push to the default branch.
+  #
+  # The lane's scan job declares its publishing scopes unconditionally,
+  # so they are granted here for the load-time check described at
+  # zizmor-self. With publish_results and upload_sarif off, neither the
+  # OIDC token nor the code-scanning write is used.
   openssf-scorecard-dry-run:
     name: 'OpenSSF Scorecard (dry run)'
     permissions:
       contents: read
+      security-events: write  # declared by the lane; upload is off
+      id-token: write  # declared by the lane; publishing is off
+      actions: read  # declared by the lane's scan job
     uses: $/.github/workflows/openssf-scorecard.yaml
     with:
       publish_results: false
@@ -359,12 +394,16 @@ jobs:
   # stay unique across jobs.
   #
   # upload is 'never' so a self-test does not file alerts against this
-  # repository, and upload_database is off for the same reason.
+  # repository, and upload_database is off for the same reason. The
+  # analyze job still declares security-events and actions, so they are
+  # granted for the load-time check described at zizmor-self.
   codeql-matrix:
     name: 'CodeQL (matrix)'
     permissions:
       contents: read
       packages: read  # fetch internal or private CodeQL packs
+      security-events: write  # declared by the lane; upload is 'never'
+      actions: read  # declared by the lane's analyze job
     uses: $/.github/workflows/codeql.yaml
     with:
       repository: 'lfreleng-actions/test-python-project'
