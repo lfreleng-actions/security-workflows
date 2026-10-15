@@ -15,7 +15,9 @@
 # DEPLOYMENT NOTES:
 #   * Needs no secrets.
 #   * Free for public repositories. Private repositories need GitHub
-#     Advanced Security, plus the extra read permissions noted below.
+#     Advanced Security. The lane's scan job does not request issues,
+#     pull-requests or checks, so on a private repository Scorecard
+#     loses the signals that need them; granting them here cannot help.
 #   * Triggers: Scorecard supports push and schedule on the DEFAULT
 #     BRANCH, and running against a fork is unsupported. The set below
 #     adds two more deliberately:
@@ -63,12 +65,8 @@ jobs:
       security-events: write  # upload results to the code scanning dashboard
       id-token: write  # publish results and obtain the badge, via OIDC
       actions: read  # upload-sarif reads run info on private repositories
-      # Private repositories additionally need these reads, or Scorecard
-      # reports 'Resource not accessible by integration' and loses the
-      # commit and SAST signals:
-      # issues: read
-      # pull-requests: read
-      # checks: read
+      # The lane's scan job requests only the scopes above, so granting
+      # more here has no effect, including on a private repository.
     # REPLACE the pinned SHA below with a security-workflows release SHA.
     # The all-zero SHA is a non-functional placeholder, NOT a real commit.
     # yamllint disable-line rule:line-length
