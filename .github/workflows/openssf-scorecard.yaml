@@ -277,8 +277,10 @@ jobs:
       # Without this the upload fails on private repositories, and
       # continue-on-error on that step would hide the failure.
       actions: read  # upload-sarif reads run info on private repos
-      # Private repositories additionally need issues: read,
-      # pull-requests: read and checks: read, granted by the caller.
+      # This job does not request issues, pull-requests or checks, so on
+      # a private repository Scorecard loses the signals that need them.
+      # A caller granting those scopes cannot change that: a called job
+      # receives only what it declares here.
     # NOTE: every step below must come from the Scorecard API's permitted
     # list. Adding anything else makes the publish call fail with
     # HTTP 400 naming the offending step.
