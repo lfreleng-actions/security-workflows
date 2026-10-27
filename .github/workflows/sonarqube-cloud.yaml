@@ -977,7 +977,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: ${{ inputs.build_type == 'maven' && inputs.maven_server_ids != '' }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/maven-xml-settings-action@c0fc040c572f4ed208631ce2b99ee342fa8239d3  # v0.2.1
+        uses: lfreleng-actions/maven-xml-settings-action@69e7068634deb19d33ba7e1d90dee2143037f387  # v0.2.2
         with:
           server-ids: ${{ inputs.maven_server_ids }}
           username: ${{ inputs.maven_server_username }}
