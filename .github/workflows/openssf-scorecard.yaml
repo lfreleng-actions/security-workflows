@@ -387,6 +387,6 @@ jobs:
 
       - name: 'Provide link to Scorecard report'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/openssf-scorecard-summary-action@ebeeaa5a07a9ffc8276318da79c1c0c9762be242  # v0.1.2
+        uses: lfreleng-actions/openssf-scorecard-summary-action@33484fc8070a49de18b1cab9dca92f208e1c7b51  # v0.1.3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
