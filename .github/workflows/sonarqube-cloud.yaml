@@ -135,7 +135,7 @@ on:
         # unconditionally, and the action rejects an empty value, so the
         # value has to be carried here rather than left blank for the
         # action to supply. Keep the two in step when the action moves.
-        default: '5.7.0.6970'
+        default: '5.8.0.7211'
       maven_args:
         description: >-
           Extra arguments appended to the Maven sonar invocation in
@@ -934,7 +934,7 @@ jobs:
       - name: 'Checkout Gerrit change'
         if: inputs.gerrit_refspec != ''
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/checkout-gerrit-change-action@35e98c8043ec411611e464e296bcfb441a5c5093  # v1.1.2
+        uses: lfreleng-actions/checkout-gerrit-change-action@fb7446a92c01efcfbd967f073b2957ef90ecb49f  # v1.2.0
         with:
           gerrit-refspec: ${{ inputs.gerrit_refspec }}
           gerrit-project: ${{ inputs.gerrit_project }}
@@ -964,7 +964,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: ${{ inputs.build_type == 'maven' || inputs.build_type == 'gradle' }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/build-metadata-action@83c38291c4af5773c010764f7cc482198a03d76c  # v0.11.0
+        uses: lfreleng-actions/build-metadata-action@f5788fd76522ba71a079caaa77b7e50d7a7c5d0f  # v0.11.1
         with:
           path_prefix: ${{ inputs.path_prefix }}
 
@@ -1262,7 +1262,7 @@ jobs:
       - name: 'SonarQube Cloud scan'
         id: sonar-scan
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/sonarqube-cloud-scan-action@2750ff73998a774dab5974491bfd9bc4e8a00791  # v1.6.1
+        uses: lfreleng-actions/sonarqube-cloud-scan-action@0c705d88d2ac6a170b43eeae0d7d1bde4103bce0  # v1.6.2
         with:
           sonar_token: ${{ secrets.sonar_token }}
           no_checkout: 'true'

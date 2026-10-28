@@ -414,7 +414,7 @@ jobs:
       - name: 'Checkout Gerrit change'
         if: inputs.gerrit_refspec != ''
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/checkout-gerrit-change-action@35e98c8043ec411611e464e296bcfb441a5c5093  # v1.1.2
+        uses: lfreleng-actions/checkout-gerrit-change-action@fb7446a92c01efcfbd967f073b2957ef90ecb49f  # v1.2.0
         with:
           gerrit-refspec: ${{ inputs.gerrit_refspec }}
           gerrit-project: ${{ inputs.gerrit_project }}
@@ -435,7 +435,7 @@ jobs:
 
       - name: 'Run zizmor audit'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/zizmor-scan-action@e6215575954bba53bde227ae317839b861b5b003  # v0.5.3
+        uses: lfreleng-actions/zizmor-scan-action@366a41f866f1f8ca6aa57e94252de6dee8e7da3b  # v0.5.4
         with:
           persona: ${{ inputs.persona }}
           min-severity: ${{ inputs.min_severity }}
@@ -511,7 +511,7 @@ jobs:
       - name: 'Upload SARIF to code scanning'
         continue-on-error: true
         # yamllint disable-line rule:line-length
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: 'zizmor.sarif'
           category: ${{ inputs.sarif_category }}
