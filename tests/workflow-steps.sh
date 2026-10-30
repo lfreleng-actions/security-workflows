@@ -228,6 +228,36 @@ expect fail 'rejects a project with nothing to resolve' \
 check '  before creating an environment' test ! -e "${work}/clm-python"
 dir="${work}"
 
+# setup-uv runs the interpreter 'uv python find' picks in its working
+# directory and reads uv settings from files there, so it must not work
+# in the checkout. Neither the lane nor setup-uv can run offline here;
+# the step's inputs are what decides it.
+setup_uv='.jobs.scan.steps[] | select(.name == "Setup uv")'
+clm_file="${root}/.github/workflows/${clm}"
+check 'setup-uv works in runner.temp, outside the checkout' test \
+  "$(yq "${setup_uv} | .with[\"working-directory\"]" "${clm_file}")" \
+  = "\${{ runner.temp }}"
+for var in UV_NO_CONFIG UV_SYSTEM_PYTHON UV_NO_PROJECT; do
+  check "  and sets ${var}" test \
+    "$(VAR="${var}" yq "${setup_uv} | .env[strenv(VAR)]" "${clm_file}")" = 1
+done
+
+# Without --no-config, 'uv venv' takes its interpreter from a
+# .python-version in the checkout. A stub uv records the arguments the
+# step really passes, then stops it.
+mkdir -p "${work}/py-req" "${work}/stub-bin"
+printf 'six==1.16.0\n' > "${work}/py-req/requirements.txt"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 3\n' \
+  "${work}/uv-args" > "${work}/stub-bin/uv"
+chmod +x "${work}/stub-bin/uv"
+dir="${work}/py-req"
+expect fail 'stops at the stubbed uv' RUNNER_TEMP="${work}" \
+  PYTHON_VERSION='' PATH="${work}/stub-bin:${PATH}"
+check '  which it ran as uv venv' test \
+  "$(head -n 1 "${work}/uv-args" 2> /dev/null)" = venv
+check '  with --no-config' grep -qxF -- '--no-config' "${work}/uv-args"
+dir="${work}"
+
 clm_names="$(yq '.jobs.scan.steps[].name' "${root}/.github/workflows/${clm}")"
 clm_at() { printf '%s\n' "${clm_names}" | grep -nxF -- "$1" | cut -d: -f1; }
 check 'python resolves after checkout' test \
