@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Runs tests/workflow-steps.sh, which executes the lanes' validation
-# and hook steps against generated inputs.
+# Runs tests/workflow-steps.sh and tests/python-warning-steps.sh, which
+# execute the lanes' validation and hook steps against generated inputs.
 #
 # This is the one self-test that runs on every pull request. testing.yaml
 # drives whole lanes against real fixtures, which needs organisation
@@ -62,3 +62,7 @@ jobs:
       - name: 'Run workflow step tests'
         shell: bash
         run: tests/workflow-steps.sh
+
+      - name: 'Run unresolved Python project warning tests'
+        shell: bash
+        run: bash tests/python-warning-steps.sh
