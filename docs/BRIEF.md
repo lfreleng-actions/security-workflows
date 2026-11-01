@@ -1028,9 +1028,12 @@ input was load-bearing.
 Common to every lane, matching the sibling repositories:
 
 `repository`, `ref`, `path_prefix`, `harden_runner_egress`,
-`harden_runner_allowlist`, `gerrit_refspec`, `gerrit_project`,
-`gerrit_branch`, `gerrit_url`, and lane-appropriate `*_permit_fail`
-toggles.
+`harden_runner_allowlist`, `harden_runner_supplemental_allowlist`,
+`harden_runner_supplemental_unpinned`, `harden_runner_extra_endpoints`,
+`gerrit_refspec`, `gerrit_project`, `gerrit_branch`, `gerrit_url`, and
+lane-appropriate `*_permit_fail` toggles. The five `harden_runner_*`
+inputs match every other `*-workflows` repository in name, type and
+default, and `tests/test-harden-runner-inputs.sh` enforces that.
 
 The source workflows used three different idioms for the allow-list
 (`harden_runner_config`, hardcoded, and hardcoded plus

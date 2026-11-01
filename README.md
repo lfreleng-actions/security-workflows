@@ -132,6 +132,75 @@ directory and replace the placeholder `uses:` SHA with a pinned release:
 
 Inputs are optional and default to the canonical behaviour; read the
 `inputs:` block at the top of each workflow for the documented list.
+[Egress allow-list](#egress-allow-list) describes the five
+`harden_runner_*` inputs that every lane shares.
+
+## Egress allow-list
+
+Every network-touching job runs harden-runner in block mode, allowing
+the endpoints on the organisation allow-list and nothing else. Each lane
+takes the same five inputs to shape that list:
+
+<!-- markdownlint-disable MD013 -->
+
+| Input | Type | Default | Effect |
+| ----- | ---- | ------- | ------ |
+| `harden_runner_egress` | string | `'block'` | `'audit'` logs egress without blocking it; any other value blocks |
+| `harden_runner_allowlist` | string | the organisation list, pinned | The baseline allow-list |
+| `harden_runner_supplemental_allowlist` | string | `''` | A second list merged with the baseline, in the same coordinate grammar |
+| `harden_runner_supplemental_unpinned` | boolean | `false` | Lets the supplemental list omit `@ref` and follow its default branch |
+| `harden_runner_extra_endpoints` | string | `''` | Inline `host[:port]` tokens, separated by spaces or newlines |
+
+<!-- markdownlint-enable MD013 -->
+
+The lanes pass all five to
+[`harden-runner-block-action`](https://github.com/lfreleng-actions/harden-runner-block-action),
+whose README defines the coordinate grammar and the search chain. The
+`openssf-scorecard.yaml` scan job is the one exception: Scorecard
+restricts the steps its job may run, so that job keeps a fixed list and
+the inputs apply to its summary job.
+
+An organisation that needs hosts beyond the shared list keeps its own
+supplemental list and names it. A caller in that organisation may
+follow the list on its default branch, so an update reaches every
+project without a pin bump. ONAP, for example, adds
+`registry.nordix.org` this way:
+
+```yaml
+    with:
+      harden_runner_supplemental_allowlist: 'onap//'
+      harden_runner_supplemental_unpinned: true
+```
+
+The action allows an unpinned list from the calling organisation alone.
+A list from another organisation must carry an `@ref`, pinned to a
+commit SHA, like the baseline:
+
+```yaml
+    with:
+      harden_runner_supplemental_allowlist: 'other-org//<path>@<commit-sha>'
+```
+
+Naming a supplemental list makes it required: the lanes set the
+action's `supplemental_required` whenever the input is non-empty, so a
+list that does not resolve fails the job when it loads, rather than at
+the first blocked connection.
+
+`harden_runner_extra_endpoints` is the short-term fix, for a host a job
+needs today:
+
+```yaml
+    with:
+      harden_runner_extra_endpoints: 'downloads.example.org:443'
+```
+
+The lasting fix is a change to the organisation's supplemental list, or
+to the shared list, after which the caller drops the inline endpoint.
+
+An unpinned list changes under a caller without a commit. The action's
+`supplemental_source` and `supplemental_sha` outputs record the
+coordinate it resolved and the commit it read, giving each run an audit
+trail.
 
 ## Conventions
 
