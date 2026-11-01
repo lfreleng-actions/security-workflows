@@ -744,6 +744,62 @@ jobs:
           submodules: ${{ inputs.submodules }}
           persist-credentials: false
 
+      # A Python project scanned with the default build_type 'none'
+      # passes green while Nexus IQ evaluates few or none of its
+      # dependencies: it cannot read pyproject.toml, setup.py or
+      # uv.lock, and reads only the '==' lines of requirements.txt.
+      # That is the D12 hazard, so name it and the fix (D24). It warns
+      # rather than fails, so existing callers keep working; a caller
+      # that points scan_targets elsewhere has chosen what to scan, and
+      # poetry.lock or Pipfile.lock are read directly, so neither warns.
+      # It enters path_prefix itself rather than through
+      # working-directory: 'none' mode never uses path_prefix, so it
+      # may name nothing, and GitHub fails a step whose working
+      # directory is missing before its script can exit 0.
+      - name: 'Check for an unresolved Python project'
+        if: inputs.build_type == 'none'
+        shell: bash
+        env:
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+          SCAN_TARGETS: ${{ inputs.scan_targets }}
+        run: |
+          set -uo pipefail
+
+          cd -- "${PATH_PREFIX}" 2> /dev/null || exit 0
+          if [ "${SCAN_TARGETS}" != '.' ]; then
+            exit 0
+          fi
+          if [ -f poetry.lock ] || [ -f Pipfile.lock ]; then
+            exit 0
+          fi
+          found=()
+          for name in pyproject.toml setup.py setup.cfg uv.lock \
+            requirements.txt; do
+            if [ -f "${name}" ]; then
+              found+=("${name}")
+            fi
+          done
+          if [ "${#found[@]}" -eq 0 ]; then
+            exit 0
+          fi
+
+          files="${found[*]}"
+          text="Found ${files// /, } with build_type 'none'. Nexus IQ"
+          text+=" cannot read pyproject.toml, setup.py or uv.lock, and"
+          text+=" reads only the '==' lines of requirements.txt, so this"
+          text+=" scan may evaluate few or none of the project's"
+          text+=" dependencies. Set build_type: 'python', with"
+          text+=" python_version, to resolve them before scanning."
+          echo "::warning title=Python dependencies not resolved::${text}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo '### Python dependencies not resolved'
+              echo
+              echo "${text}"
+            } >> "${GITHUB_STEP_SUMMARY}" || true
+          fi
+          exit 0
+
       # Detect the project's Java version so the pre-scan build uses
       # the toolchain the project expects, rather than whatever the
       # Nexus IQ CLI needs. Go is deliberately absent: 'Setup Go'
