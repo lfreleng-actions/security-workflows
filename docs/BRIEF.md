@@ -794,6 +794,26 @@ uv provisions the interpreter, so the lane needs no `setup-python`,
 and supplies `uv export` for lock files; pip does the resolving,
 because uv has no download command.
 
+A Python project that keeps the default `build_type: 'none'` meets
+the same hazard silently. Both of this organisation's own callers are
+uv projects scanned that way: `http-api-tool-docker` pins 14 runtime
+packages in `uv.lock` and reported no components, `lftools-uv` pins 79
+and reported 4. So the scan job now warns, through an annotation and
+the step summary, when `build_type` is `none`, `scan_targets` is left
+at `.`, and `path_prefix` holds `pyproject.toml`, `setup.py`,
+`setup.cfg`, `uv.lock` or `requirements.txt` but neither `poetry.lock`
+nor `Pipfile.lock`, which Nexus IQ reads directly. It warns rather
+than fails so that every existing caller keeps working; escalating it
+is for a later release. For the same reason it enters `path_prefix`
+itself and stays silent when that names no directory: `none` mode
+never uses `path_prefix`, and a missing `working-directory` would
+fail the step before its script ran. Two facts back the advice it gives, both
+verified on 2026-11-01. Python mode yields exact matches on the live
+server: with CLI 2.13.0-01, scanning `http-api-tool-docker`'s resolved
+wheels found 14 components, all exact. And the CLI's default
+`dirExcludes=**/.*` does not exclude the scan target itself, so the
+dot-directory `.python-deps` is scanned rather than skipped.
+
 ### D25 — The Go SBOM stays on `cyclonedx-gomod`
 
 D20 left open whether `lfreleng-actions/sbom-action`, which wraps
