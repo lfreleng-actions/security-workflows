@@ -337,6 +337,15 @@ jobs:
       security-events: write  # declared by the lane's skipped upload
       actions: read  # declared by the lane's skipped upload job
     uses: $/.github/workflows/zizmor.yaml
+    with:
+      # Exercise the allow-list inputs without granting anything new.
+      # A same-organisation list may follow its default branch, and
+      # 'lfreleng-actions//' resolves to the organisation list itself,
+      # which de-duplication absorbs. The organisation list already
+      # carries github.com:443, so the action reports it as redundant.
+      harden_runner_supplemental_allowlist: 'lfreleng-actions//'
+      harden_runner_supplemental_unpinned: true
+      harden_runner_extra_endpoints: 'github.com:443'
 
   # Audit a fixture repository, which also covers the cross-repository
   # checkout path and the summary attribution inputs that go with it.
