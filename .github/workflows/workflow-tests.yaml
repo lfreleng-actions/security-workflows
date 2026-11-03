@@ -66,3 +66,169 @@ jobs:
       - name: 'Run unresolved Python project warning tests'
         shell: bash
         run: bash tests/python-warning-steps.sh
+
+      - name: 'Run tox Python step tests'
+        shell: bash
+        run: bash tests/tox-python-steps.sh
+
+  # Runs the SonarQube lane's tox steps for real against the fixture in
+  # tests/fixtures/tox-python, short of the Sonar analysis, which needs
+  # credentials. tox-run-action v1 runs tox only on Python 3.11 or
+  # newer, so a caller on an older Python is split: tox on a modern
+  # Python, its environments on the caller's. The fixture's environment
+  # fails unless it runs on EXPECT_PYTHON, so each leg proves where the
+  # environments really ran. The run block of 'Plan tox Python' is
+  # lifted from the lane, and tests/tox-python-steps.sh fails if any
+  # step's uses, with or env here drifts from the lane's.
+  tox-python:
+    name: 'tox Python (${{ matrix.leg }})'
+    # ubuntu-24.04 rather than ubuntu-latest: the old-Python legs need
+    # setup-python to provide 3.10 for this runner image.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: '3.10 through python_version'
+            python_version: '3.10'
+            python_version_file: ''
+            write_version_file: ''
+            path_prefix: 'tests/fixtures/tox-python'
+            tox_envs: 'version-check'
+            tox_parallel: 'auto'
+            expect_python: '3.10'
+            expect_split: true
+          - leg: '3.10 through python_version_file'
+            python_version: ''
+            python_version_file: 'tests/fixtures/tox-python/.python-version'
+            # Written at run time, as a bare version file cannot carry
+            # a licence header.
+            write_version_file: 'tests/fixtures/tox-python/.python-version'
+            path_prefix: 'tests/fixtures/tox-python'
+            tox_envs: 'version-check'
+            tox_parallel: 'auto'
+            expect_python: '3.10'
+            expect_split: true
+          - leg: '3.12 through python_version'
+            python_version: '3.12'
+            python_version_file: ''
+            write_version_file: ''
+            path_prefix: 'tests/fixtures/tox-python'
+            tox_envs: 'version-check'
+            tox_parallel: 'auto'
+            expect_python: '3.12'
+            expect_split: false
+          # Neither input set: setup-python, in the lane and inside
+          # tox-run-action alike, reads a .python-version at the
+          # workspace root.
+          - leg: '3.10 through a root .python-version'
+            python_version: ''
+            python_version_file: ''
+            write_version_file: '.python-version'
+            path_prefix: 'tests/fixtures/tox-python'
+            tox_envs: 'version-check'
+            tox_parallel: 'auto'
+            expect_python: '3.10'
+            expect_split: true
+    env:
+      EXPECT_PYTHON: ${{ matrix.expect_python }}
+    steps:
+      # The lane's own egress allow-list, which its tox build runs under
+      - name: 'Load egress allow-list'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          # yamllint disable-line rule:line-length
+          config: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+      - name: 'Harden runner'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Write the Python version file'
+        if: matrix.write_version_file != ''
+        shell: bash
+        env:
+          PYTHON_VERSION_FILE: ${{ matrix.write_version_file }}
+        run: echo "${EXPECT_PYTHON}" > "${PYTHON_VERSION_FILE}"
+
+      - name: 'Resolve tox Python'
+        id: tox-caller-python
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ matrix.python_version }}
+          python-version-file: ${{ matrix.python_version_file }}
+
+      - name: 'Plan tox Python'
+        id: tox-python
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          RESOLVED_PYTHON: ${{ steps.tox-caller-python.outputs.python-version }}
+        run: |
+          plan="${RUNNER_TEMP}/plan-tox-python.sh"
+          yq -e '.jobs.scan.steps[]
+            | select(.name == "Plan tox Python") | .run' \
+            .github/workflows/sonarqube-cloud.yaml > "${plan}"
+          bash --noprofile --norc -eo pipefail "${plan}"
+
+      - name: 'Tox run'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/tox-run-action@1d68abdba823c3b723395507fcf780e9dc91c193  # v1.0.0
+        with:
+          path_prefix: ${{ matrix.path_prefix }}
+          # yamllint disable-line rule:line-length
+          python-version: ${{ steps.tox-python.outputs.versions || matrix.python_version }}
+          # yamllint disable-line rule:line-length
+          python-version-file: ${{ steps.tox-python.outputs.versions == '' && matrix.python_version_file || '' }}
+          tox-envs: ${{ matrix.tox_envs }}
+          parallel: ${{ matrix.tox_parallel }}
+        env:
+          # tox reads any option from a TOX_<OPTION> variable, and
+          # treats an empty one as unset.
+          TOX_OVERRIDE: ${{ steps.tox-python.outputs.override }}
+
+      - name: 'Assert the tox Python plan'
+        shell: bash
+        env:
+          EXPECT_SPLIT: ${{ matrix.expect_split }}
+          VERSIONS: ${{ steps.tox-python.outputs.versions }}
+          OVERRIDE: ${{ steps.tox-python.outputs.override }}
+        run: |
+          # The environment itself proved where it ran; this proves the
+          # plan split tox off only when it had to.
+          if [ "${EXPECT_SPLIT}" = 'true' ]; then
+            expected_versions="$(printf '%s\n' "${EXPECT_PYTHON}" 3.13)"
+            expected_override="testenv.default_base_python=python${EXPECT_PYTHON}"
+          else
+            expected_versions=''
+            expected_override=''
+          fi
+          # The resolved version carries a patch level
+          actual_versions="$(printf '%s\n' "${VERSIONS}" \
+            | sed -E 's/^([0-9]+\.[0-9]+)\.[0-9]+$/\1/')"
+          status=0
+          if [ "${actual_versions}" != "${expected_versions}" ]; then
+            echo "::error::versions: expected '${expected_versions}'," \
+              "got '${VERSIONS}'"
+            status=1
+          fi
+          if [ "${OVERRIDE}" != "${expected_override}" ]; then
+            echo "::error::override: expected '${expected_override}'," \
+              "got '${OVERRIDE}'"
+            status=1
+          fi
+          exit "${status}"
