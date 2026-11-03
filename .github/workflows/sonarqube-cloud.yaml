@@ -359,25 +359,38 @@ on:
         default: ''
 
       # --- Build: Python (tox) ---
+      # tox itself needs Python 3.11 or newer. A request for an older
+      # Python still works: tox runs on a modern Python and the tox
+      # environments run on the requested one (see 'Plan tox Python').
       python_version:
-        description: 'Python version for the tox run'
+        description: >-
+          Python version for the tox environments. Empty, with
+          python_version_file empty too, uses a .python-version at the
+          workspace root, or else the runner's Python. Below 3.11, tox
+          itself runs on a newer Python while its environments keep
+          this one.
         required: false
         type: string
         default: ''
       python_version_file:
-        description: 'File to read the Python version from'
+        description: >-
+          File to read the Python version from, relative to the
+          workspace root; treated as python_version is
         required: false
         type: string
         default: ''
       tox_envs:
         description: >-
-          Tox environments to run. Choose the environment that emits
-          the coverage report referenced by sonar-project.properties.
+          Tox environments to run, as names separated by commas with
+          no spaces or options. Choose the environment that emits the
+          coverage report referenced by sonar-project.properties.
         required: false
         type: string
         default: ''
       tox_parallel:
-        description: "Tox parallelism, for example 'auto' or '4'"
+        description: >-
+          Tox parallelism: 'auto', 'all', 'off', a number, or empty to
+          run the environments in turn
         required: false
         type: string
         default: 'auto'
@@ -636,6 +649,35 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: 'Validate tox inputs'
+        if: inputs.build_type == 'tox'
+        shell: bash
+        env:
+          TOX_ENVS: ${{ inputs.tox_envs }}
+          TOX_PARALLEL: ${{ inputs.tox_parallel }}
+        run: |
+          # tox-run-action rejects these itself, but only once the scan
+          # job has checked out and set up Python, and its message
+          # names its own inputs rather than this lane's. Both values
+          # reach the tox command line, so anything beyond names and
+          # counts could carry an option such as --notest, which skips
+          # every command and still reports success. Mirrors the
+          # action's own rules.
+          env_name='[A-Za-z0-9_][A-Za-z0-9_.+-]*'
+          if [ -n "${TOX_ENVS}" ] \
+            && ! [[ "${TOX_ENVS}" =~ ^${env_name}(,${env_name})*$ ]]; then
+            echo "::error::tox_envs must be environment names separated" \
+              "by commas, with no spaces or options (received:" \
+              "'${TOX_ENVS}')"
+            exit 1
+          fi
+          if [ -n "${TOX_PARALLEL}" ] \
+            && ! [[ "${TOX_PARALLEL}" =~ ^(auto|all|off|[0-9]+)$ ]]; then
+            echo "::error::tox_parallel must be 'auto', 'all', 'off', a" \
+              "number or empty (received: '${TOX_PARALLEL}')"
+            exit 1
+          fi
 
       - name: 'Validate analysis_mode input'
         shell: bash
@@ -1102,17 +1144,109 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # tox-run-action runs tox on Python 3.11 or newer and fails on
+      # anything older. Older requests keep working by running tox on
+      # a modern Python while the tox environments keep the caller's.
+      # The caller's version is only known once setup-python resolves
+      # it, python_version_file included, so resolve it here first.
+      # This runs for every tox build: with neither input set,
+      # setup-python, here and inside tox-run-action alike, reads a
+      # .python-version at the workspace root, and without one leaves
+      # the runner's own Python in place and sets no version, so the
+      # plan changes nothing. A failure here is a build failure, so
+      # build_permit_fail covers it too; the plan then sees no
+      # version and tox-run-action reports the same failure.
+      - name: 'Resolve tox Python'
+        id: tox-caller-python
+        if: inputs.build_type == 'tox'
+        continue-on-error: ${{ inputs.build_permit_fail == true }}
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ inputs.python_version }}
+          python-version-file: ${{ inputs.python_version_file }}
+
+      - name: 'Plan tox Python'
+        id: tox-python
+        if: inputs.build_type == 'tox'
+        shell: bash
+        env:
+          # yamllint disable-line rule:line-length
+          RESOLVED_PYTHON: ${{ steps.tox-caller-python.outputs.python-version }}
+        run: |
+          # Leaves both outputs empty, so tox-run-action receives the
+          # caller's inputs unchanged, unless the resolved Python is
+          # older than tox's 3.11 floor. Then 'versions' lists the
+          # caller's Python first and tox_python last, because
+          # tox-run-action runs tox on the last version listed, and
+          # 'override' pins environments without a Python factor to
+          # the caller's Python. Factor environments (py310) and an
+          # explicit base_python in tox.ini already name their own.
+          tox_python='3.13'
+
+          # An empty or unrecognised version (PyPy, a failed resolve)
+          # goes through unchanged, as it did before this plan
+          # existed. The pattern also keeps the value to one line,
+          # since it is written into a multi-line output below.
+          version_re='^([0-9]+)\.([0-9]+)(\.[0-9A-Za-z.+-]*)?$'
+          if ! [[ "${RESOLVED_PYTHON}" =~ ${version_re} ]]; then
+            echo "Python '${RESOLVED_PYTHON}': tox-run-action receives" \
+              "the caller's inputs unchanged"
+            exit 0
+          fi
+          major=$((10#${BASH_REMATCH[1]}))
+          minor=$((10#${BASH_REMATCH[2]}))
+          if [ "${major}" -gt 3 ] \
+            || { [ "${major}" -eq 3 ] && [ "${minor}" -ge 11 ]; }; then
+            echo "Python ${RESOLVED_PYTHON} runs tox directly"
+            exit 0
+          fi
+
+          {
+            echo 'versions<<TOX_PYTHON_VERSIONS'
+            echo "${RESOLVED_PYTHON}"
+            echo "${tox_python}"
+            echo 'TOX_PYTHON_VERSIONS'
+            echo "override=testenv.default_base_python=python${major}.${minor}"
+          } >> "${GITHUB_OUTPUT}"
+
+          message="tox runs on Python ${tox_python}, as it needs 3.11 or"
+          message+=" newer, while the tox environments use the requested"
+          message+=" Python ${RESOLVED_PYTHON}, which has reached end of"
+          message+=" life"
+          echo "::warning title=tox runs on Python ${tox_python}::${message}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### ⚠️ tox runs on Python ${tox_python}"
+              echo
+              echo "${message}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      # tox-run-action ignores python-version-file whenever
+      # python-version is set, so the file goes through only when the
+      # plan left the caller's inputs unchanged. tox now runs from a
+      # virtual environment of its own, but still from path_prefix,
+      # so a coverage report a tox environment writes lands where it
+      # always did: under path_prefix, which is Sonar's
+      # projectBaseDir.
       - name: 'Tox run'
         if: inputs.build_type == 'tox'
         continue-on-error: ${{ inputs.build_permit_fail == true }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/tox-run-action@2820cd45d9bc61216e8cddb84158c55c7781d321  # v0.2.0
+        uses: lfreleng-actions/tox-run-action@1d68abdba823c3b723395507fcf780e9dc91c193  # v1.0.0
         with:
           path_prefix: ${{ inputs.path_prefix }}
-          python-version: ${{ inputs.python_version }}
-          python-version-file: ${{ inputs.python_version_file }}
+          # yamllint disable-line rule:line-length
+          python-version: ${{ steps.tox-python.outputs.versions || inputs.python_version }}
+          # yamllint disable-line rule:line-length
+          python-version-file: ${{ steps.tox-python.outputs.versions == '' && inputs.python_version_file || '' }}
           tox-envs: ${{ inputs.tox_envs }}
           parallel: ${{ inputs.tox_parallel }}
+        env:
+          # tox reads any option from a TOX_<OPTION> variable, and
+          # treats an empty one as unset.
+          TOX_OVERRIDE: ${{ steps.tox-python.outputs.override }}
 
       # Writes coverage.out into path_prefix, which is also Sonar's
       # projectBaseDir, so the default sonar.go.coverage.reportPaths

@@ -119,6 +119,37 @@ property of their own (OpenDaylight's `odl.jacoco.aggregateFile`, and the
 [mba]: https://github.com/lfreleng-actions/maven-build-action
 [sonar-multi]: https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/test-coverage/java-test-coverage#add-coverage-in-a-multi-module-maven-project
 
+## Python (tox) builds
+
+`sonarqube-cloud.yaml` runs `build_type: tox` builds through
+[`tox-run-action`][tra], which runs tox itself on Python 3.11 or newer.
+`python_version` and `python_version_file` name the Python for the tox
+environments. With both left empty, a `.python-version` file at the
+workspace root names it, as `actions/setup-python` reads one by default;
+without that file, the runner's Python serves both.
+
+Older Python versions still work. When the requested Python, from
+either input or the root `.python-version`, resolves to a version below
+3.11, the lane runs tox on Python 3.13 and sets
+`TOX_OVERRIDE=testenv.default_base_python=python<major>.<minor>`, so
+environments without a Python factor keep the requested Python. Factor
+environments such as `py310`, and any `base_python` set in `tox.ini`,
+choose their own. The job then warns, in the log and the step summary,
+that the requested Python has reached end of life.
+
+The lane rejects two inputs before the scan starts:
+
+- `tox_envs` must be environment names separated by commas, with no
+  spaces or options, for example `py312,lint`.
+- `tox_parallel` must be `auto`, `all`, `off`, a number, or empty.
+
+`path_prefix` must also resolve inside the workspace, symbolic links
+included. tox still runs from `path_prefix`, which is also Sonar's
+`projectBaseDir`, so a coverage report a tox environment writes relative
+to the project lands where the analysis looks for it.
+
+[tra]: https://github.com/lfreleng-actions/tox-run-action
+
 ## Usage
 
 Each lane ships two callers under `examples/<lane>/`, added alongside
