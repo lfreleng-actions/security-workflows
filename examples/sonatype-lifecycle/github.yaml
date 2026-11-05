@@ -39,8 +39,8 @@ jobs:
     #  with:
     #   build_type: 'none'          # 'maven', 'gradle', 'go' or 'python'
     #                               # to resolve dependencies first
-    #   python_version: ''          # 'python' only; empty lets uv pick one
-    #                               # meeting requires-python
+    #   python_version: ''          # 'python' only; empty picks one
+    #                               # meeting requires-python, else 3.13
     #   java_version: ''            # build JDK; empty auto-detects
     #   iq_java_version: '17'       # Nexus IQ CLI runtime JDK
     #   scan_mode: 'cli'            # 'cli' runs the Nexus IQ CLI over
