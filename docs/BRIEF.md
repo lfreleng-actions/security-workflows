@@ -1033,7 +1033,11 @@ Common to every lane, matching the sibling repositories:
 `gerrit_refspec`, `gerrit_project`, `gerrit_branch`, `gerrit_url`, and
 lane-appropriate `*_permit_fail` toggles. The five `harden_runner_*`
 inputs match every other `*-workflows` repository in name, type and
-default, and `tests/test-harden-runner-inputs.sh` enforces that.
+default, and `tests/test-harden-runner-inputs.sh` enforces that. Each
+input's description must be the reference wording, optionally
+followed by `.` and a note about the workflow. Every
+`harden-runner-block-action` step in the repository must pin the same
+commit SHA, with the same `# vX.Y.Z` comment, at or above v0.15.0.
 
 The source workflows used three different idioms for the allow-list
 (`harden_runner_config`, hardcoded, and hardcoded plus
