@@ -182,8 +182,10 @@ on:
       python_version:
         description: >-
           Python for build_type 'python' to resolve dependencies
-          under, as uv accepts it ('3.12', '3.11.9'). Empty lets uv
-          choose one satisfying the project's requires-python; a
+          under, as uv accepts it ('3.12', '3.11.9'). Empty uses the
+          newest Python satisfying the requires-python of
+          path_prefix's pyproject.toml, or 3.13 when there is no
+          pyproject.toml or it sets no requires-python; a
           .python-version in the project is not read. It
           matters: dependency markers are evaluated against the
           interpreter, so the set scanned can differ between versions.
@@ -1050,12 +1052,18 @@ jobs:
       # off for the same reason as Setup Go: a scan should not read
       # state a previous, possibly lower-privileged run wrote.
       #
-      # setup-uv runs the interpreter 'uv python find' picks in its
-      # working directory and reads uv settings from files there, so
-      # it works in runner.temp rather than the checkout; nothing it
-      # does needs the project. The env covers a checkout that is a
-      # parent of that directory.
+      # setup-uv runs the interpreter 'uv python find' picks and reads
+      # uv settings from files in its working directory, so it works in
+      # runner.temp rather than the checkout; nothing it does needs the
+      # project. UV_NO_CONFIG and UV_NO_PROJECT cover a checkout that
+      # is a parent of that directory. Files are not the only route:
+      # PATH, UV_PYTHON and similar variables, which an earlier step
+      # can set through GITHUB_ENV or GITHUB_PATH, also steer the
+      # lookup, so the lookup is disabled outright (see below). That
+      # also keeps the cache off: setup-uv's post-step
+      # 'uv cache prune' would hit the invalid preference.
       - name: 'Setup uv'
+        id: setup-uv
         if: inputs.build_type == 'python'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
@@ -1063,10 +1071,98 @@ jobs:
           version: '0.13.4'
           enable-cache: false
           working-directory: ${{ runner.temp }}
+          tool-bin-dir: ${{ runner.temp }}/uv-tool-bin
         env:
           UV_NO_CONFIG: '1'
+          # Inert here: with the invalid preference below, uv rejects
+          # its arguments before any lookup, so no setting that selects
+          # an interpreter is ever read.
           UV_SYSTEM_PYTHON: '1'
           UV_NO_PROJECT: '1'
+          # setup-uv's only uv call here is 'uv python find', whose
+          # result it executes; an invalid preference makes uv refuse
+          # its arguments before any lookup.
+          UV_PYTHON_PREFERENCE: 'lookup-disabled'
+          # Inherited, it makes setup-uv probe uv, which the line above
+          # fails.
+          UV_PYTHON_ARCH: ''
+          # setup-uv puts this ahead of its own uv on PATH, so an
+          # inherited value could supply a different uv.
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/uv-python
+
+      # The interpreter dependencies resolve under, installed by uv into
+      # a directory of its own and handed on by absolute path, so
+      # nothing in the job's environment or the checkout can choose it.
+      # uv runs under 'env -i' with an allow-list for the same reason.
+      # The request is python_version, or else the project's
+      # requires-python read from pyproject.toml with yq (never by
+      # running project code or uv in the checkout), or else 3.13.
+      # runner.temp, not the checkout: uv starts a .venv's python in
+      # its working directory to inspect it.
+      - name: 'Install Python'
+        id: python
+        if: inputs.build_type == 'python'
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          UV: ${{ steps.setup-uv.outputs.uv-path }}
+          INSTALL_DIR: ${{ runner.temp }}/uv-python
+          PYTHON_VERSION: ${{ inputs.python_version }}
+          PATH_PREFIX: ${{ inputs.path_prefix }}
+        run: |
+          set -euo pipefail
+
+          request="${PYTHON_VERSION}"
+          source='python_version'
+          if [ -z "${request}" ]; then
+            pyproject="${GITHUB_WORKSPACE}/${PATH_PREFIX}/pyproject.toml"
+            if [ -f "${pyproject}" ]; then
+              # mikefarah yq parses TOML in full (any string form, quoted
+              # or dotted keys) without running anything from the
+              # project. ubuntu-latest ships it.
+              if ! yq --version 2> /dev/null | grep -q 'mikefarah.* v4\.'; then
+                echo "::error::reading requires-python needs mikefarah yq v4"
+                exit 1
+              fi
+              # A missing key reads as empty and falls back below; a file
+              # that is not valid TOML fails the step instead.
+              request="$(yq -p toml -oy '.project["requires-python"] // ""' \
+                "${pyproject}")" || {
+                echo "::error::could not parse" \
+                  "${PATH_PREFIX:+${PATH_PREFIX}/}pyproject.toml as TOML"
+                exit 1
+              }
+              source='requires-python'
+            fi
+          fi
+          if [ -z "${request}" ]; then
+            request='3.13'
+            source='the default'
+          fi
+          echo "Python request: ${request} (from ${source})"
+
+          clean=(UV_NO_CONFIG=1 UV_NO_PROJECT=1
+            "UV_PYTHON_INSTALL_DIR=${INSTALL_DIR}"
+            "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache")
+          for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy \
+              https_proxy all_proxy no_proxy SSL_CERT_FILE SSL_CERT_DIR \
+              UV_NATIVE_TLS; do
+            if [ -n "${!name+set}" ]; then clean+=("${name}=${!name}"); fi
+          done
+          # '--' so a request read from the project cannot pass as an
+          # option.
+          env -i "${clean[@]}" "${UV}" python install --quiet --no-bin \
+            -- "${request}"
+          py="$(env -i "${clean[@]}" "${UV}" python find --managed-python \
+            --system -- "${request}")"
+          case "${py}" in
+            "${INSTALL_DIR}"/*) ;;
+            *)
+              echo "::error::uv found Python outside its install directory"
+              exit 1
+              ;;
+          esac
+          echo "path=${py}" >> "${GITHUB_OUTPUT}"
 
       # Resolve, then scan what resolved. Nexus IQ reads only a file
       # named requirements.txt, and only its '==' lines, so scanning
@@ -1098,7 +1194,7 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.path_prefix }}
         env:
-          PYTHON_VERSION: ${{ inputs.python_version }}
+          PYTHON: ${{ steps.python.outputs.path }}
         run: |
           set -euo pipefail
 
@@ -1117,13 +1213,14 @@ jobs:
           echo "Resolving from: ${source}"
 
           venv="${RUNNER_TEMP}/clm-python"
+          # PYTHON is the absolute path 'Install Python' resolved, so
+          # nothing in the environment or the checkout chooses the
+          # interpreter. --no-config: a uv.toml or .python-version in
+          # the checkout is not read either.
           python_args=()
-          if [ -n "${PYTHON_VERSION}" ]; then
-            python_args=(--python "${PYTHON_VERSION}")
+          if [ -n "${PYTHON:-}" ]; then
+            python_args=(--python "${PYTHON}")
           fi
-          # --no-config: a .python-version or uv.toml in the checkout
-          # does not choose the interpreter. The project's
-          # requires-python still applies.
           uv venv --quiet --seed --no-config "${python_args[@]}" "${venv}"
           interpreter="$("${venv}/bin/python" --version)"
           echo "Resolving under: ${interpreter}"
@@ -1152,7 +1249,8 @@ jobs:
                 # project itself is omitted: it is the thing under
                 # scan, not a dependency of it.
                 exported="${RUNNER_TEMP}/clm-uv-requirements.txt"
-                uv export --quiet --locked --format requirements-txt \
+                uv export --quiet --locked --no-config \
+                  "${python_args[@]}" --format requirements-txt \
                   --no-dev --no-emit-project > "${exported}" || return 2
                 "${pip[@]}" -r "${exported}" || return 1
                 ;;
@@ -1182,7 +1280,7 @@ jobs:
             # The common cause, found migrating the first consumers:
             # an old exact pin with no wheel for a newer interpreter
             # falls back to building from source, which fails. With
-            # no requires-python in the project, uv picks the newest.
+            # no requires-python in the project, 3.13 is used.
             echo "::error::could not resolve the dependencies in" \
               "${source} under ${interpreter}. A pinned package with" \
               "no wheel for this Python is built from source instead," \
