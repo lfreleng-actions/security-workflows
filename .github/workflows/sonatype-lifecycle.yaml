@@ -403,7 +403,7 @@ on:
         required: false
         type: string
         # yamllint disable-line rule:line-length
-        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+        default: 'lfreleng-actions//.github/harden-runner/lfreleng-actions/allow_list.txt@6e6cab073a93c0d58e4e8846d44e1cbddbac975b'  # v0.21.0
       harden_runner_supplemental_allowlist:
         description: >-
           Extra harden-runner allow-list merged with
@@ -733,7 +733,7 @@ jobs:
       # mode was unreachable however the caller asked for it.
       - name: 'Load egress allow-list'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: ${{ inputs.harden_runner_allowlist }}
           # yamllint disable-line rule:line-length
@@ -757,7 +757,7 @@ jobs:
       - name: 'Checkout Gerrit change'
         if: inputs.gerrit_refspec != ''
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/checkout-gerrit-change-action@f0dd3d4dd4fceff1f56348152ecf0e040594f16a  # v1.2.1
+        uses: lfreleng-actions/checkout-gerrit-change-action@8721c15dacdd703064df5ade1416f7e5590b65f3  # v1.4.1
         with:
           gerrit-refspec: ${{ inputs.gerrit_refspec }}
           gerrit-project: ${{ inputs.gerrit_project }}
@@ -846,7 +846,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: inputs.build_type == 'maven' || inputs.build_type == 'gradle'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/build-metadata-action@f5788fd76522ba71a079caaa77b7e50d7a7c5d0f  # v0.11.1
+        uses: lfreleng-actions/build-metadata-action@a52e7ccbf5e1b71075112e7b6c0ec3937fc39f0d  # v0.12.0
         with:
           path_prefix: ${{ inputs.path_prefix }}
 
@@ -861,7 +861,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: ${{ inputs.build_type == 'maven' && inputs.maven_server_ids != '' }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/maven-xml-settings-action@69e7068634deb19d33ba7e1d90dee2143037f387  # v0.2.2
+        uses: lfreleng-actions/maven-xml-settings-action@103ca76841d9e2172142338257a7920c595b5429  # v0.2.3
         with:
           server-ids: ${{ inputs.maven_server_ids }}
           username: ${{ inputs.maven_server_username }}
@@ -880,7 +880,7 @@ jobs:
         # yamllint disable-line rule:line-length
         continue-on-error: ${{ inputs.build_permit_fail != false }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/maven-build-action@22149998fae8dd5ef1ffc8890ec0ce3785683983  # v0.5.5
+        uses: lfreleng-actions/maven-build-action@1de87fd734620335eeae65933795f226c0d8a24e  # v0.5.6
         with:
           path_prefix: ${{ inputs.path_prefix }}
           # yamllint disable-line rule:line-length
@@ -911,7 +911,7 @@ jobs:
         # yamllint disable-line rule:line-length
         continue-on-error: ${{ inputs.build_permit_fail != false }}
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/gradle-build-action@62e164ecb3db615191f718067a09efca6f2b3057  # v0.7.0
+        uses: lfreleng-actions/gradle-build-action@2c976bb2b5e116f5ae339de015634af605affdbc  # v0.7.1
         with:
           # gradle-build-action names this 'path', not 'path_prefix'
           path: ${{ inputs.path_prefix }}
@@ -1365,7 +1365,7 @@ jobs:
         # scan_mode: 'sbom' uploads directly via REST above instead.
         if: inputs.build_type != 'go' || inputs.scan_mode != 'sbom'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/sonatype-lifecycle-scan-action@71c04eb6a4fb17c2f7a966b996d64e2cacdfac02  # v0.2.2
+        uses: lfreleng-actions/sonatype-lifecycle-scan-action@df7ed1b8e9a9fa59e5b11feb3aba566c27fda1cc  # v0.2.3
         with:
           nexus_iq_server: ${{ vars.NEXUS_IQ_SERVER }}
           nexus_iq_username: ${{ vars.NEXUS_IQ_USERNAME }}
