@@ -368,6 +368,12 @@ the caller pinned, and verifies that file rather than the caller.
 `ossf/scorecard-action` is a Docker action; the image pull was confirmed
 to succeed under that exact list, so it must not be added speculatively.
 
+The summary job loads the full organisation allow-list, and the agent
+used to exit when any one of its hosts failed to resolve. The loader
+(v0.16.4 onwards) restarts the agent after a transient resolver failure,
+so the summary job stays on it rather than keeping a curated list of
+its own.
+
 There is no `repository` or `ref` input. Scorecard reads
 `GITHUB_REPOSITORY` and queries the GitHub API, so checking out a
 different repository would change the working tree without changing what
