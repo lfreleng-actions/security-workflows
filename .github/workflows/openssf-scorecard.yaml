@@ -20,6 +20,9 @@
 #     harden-runner-block-action loader is NOT on that list, so the scan
 #     job carries a curated inline allow-list instead. The summary job
 #     has no such restriction and uses the shared loader normally.
+#     Nor can the scan job wait for harden-runner's agent to finish
+#     starting, so it runs the analysis a second time when the first
+#     attempt fails; the 'Run analysis' step explains why.
 #   * The scan job may not declare job-level env or defaults, which is
 #     why input validation lives in its own job rather than in a step.
 #   * No workflow-level write permissions, and only the scan job may
@@ -348,7 +351,43 @@ jobs:
         with:
           persist-credentials: false
 
+      # Run twice at most, to survive a race in harden-runner's startup.
+      # Its pre hook waits about 9 s for the agent and then lets the job
+      # continue. When DNS is slow the agent is still setting up as this
+      # Docker action starts, and its 'systemctl restart docker' then
+      # kills the container ('error waiting for container: unexpected
+      # EOF', or 'context canceled'). Docker is back within seconds, so
+      # the second attempt finds it ready.
+      #
+      # The job cannot wait for the agent instead: the Scorecard API
+      # rejects run: steps and every action off its permitted list, which
+      # excludes harden-runner-block-action, and a second harden-runner
+      # step skips its wait because the agent is already installed. The
+      # API checks only each step's 'uses', so 'id', 'if' and
+      # 'continue-on-error' are allowed.
+      #
+      # Limits: the retry fires on any failure, so a genuine one runs the
+      # analysis twice. It does not close the window in which the first
+      # steps run before egress filtering is in place; only a change in
+      # step-security/harden-runner can. tests/scorecard-retry-steps.sh
+      # keeps the two steps identical and adjacent.
       - name: 'Run analysis'
+        id: analysis
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e  # v2.5.0
+        with:
+          results_file: ${{ inputs.results_file }}
+          results_format: ${{ inputs.results_format }}
+          publish_results: ${{ inputs.publish_results }}
+          file_mode: ${{ inputs.file_mode }}
+
+      # continue-on-error leaves the job successful after a failed first
+      # attempt, so this step and the uploads below still pass their
+      # implicit success() check. If this attempt fails too, the job
+      # fails and the uploads are skipped.
+      - name: 'Run analysis (retry)'
+        if: steps.analysis.outcome == 'failure'
         # yamllint disable-line rule:line-length
         uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e  # v2.5.0
         with:

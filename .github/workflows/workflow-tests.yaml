@@ -76,6 +76,10 @@ jobs:
         shell: bash
         run: bash tests/uv-interpreter-steps.sh
 
+      - name: 'Run Scorecard analysis retry tests'
+        shell: bash
+        run: bash tests/scorecard-retry-steps.sh
+
   # Runs the SonarQube lane's tox steps for real against the fixture in
   # tests/fixtures/tox-python, short of the Sonar analysis, which needs
   # credentials. tox-run-action v1 runs tox only on Python 3.11 or
