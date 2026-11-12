@@ -368,6 +368,36 @@ the caller pinned, and verifies that file rather than the caller.
 `ossf/scorecard-action` is a Docker action; the image pull was confirmed
 to succeed under that exact list, so it must not be added speculatively.
 
+The scan job runs the analysis a second time when the first attempt
+fails. harden-runner's pre hook waits about 9 s for its agent and then
+lets the job continue; when DNS is slow the agent is still setting up
+as `ossf/scorecard-action` starts, and its `systemctl restart docker`
+kills the analysis container. Every way of making the job wait is
+closed: the API rejects `run:` steps and the
+`harden-runner-block-action` loader, a second harden-runner step skips
+its wait because the agent is already installed, and a second job
+running the scan cannot hold `id-token: write`. The API checks only
+each step's `uses`, so the first attempt carries `continue-on-error`
+and an identical second attempt runs only when its outcome is
+`failure`. `tests/scorecard-retry-steps.sh` holds that shape. What it
+does not do:
+
+- The race cannot be forced in CI, so the retry path is reasoned from
+  failed and near-miss runs, where `docker run` issued about a second
+  after the Docker restart began went on to succeed. No test run
+  exercises it.
+- It fires on any failure of the first attempt, so a genuine failure
+  runs the analysis twice.
+- It does not close the window in which the job's first steps run
+  before egress filtering is in place. Only a change in
+  `step-security/harden-runner` can close that.
+
+The summary job loads the full organisation allow-list, and the agent
+used to exit when any one of its hosts failed to resolve. The loader
+(v0.16.4 onwards) restarts the agent after a transient resolver failure,
+so the summary job stays on it rather than keeping a curated list of
+its own.
+
 There is no `repository` or `ref` input. Scorecard reads
 `GITHUB_REPOSITORY` and queries the GitHub API, so checking out a
 different repository would change the working tree without changing what

@@ -189,7 +189,10 @@ The lanes pass all five to
 whose README defines the coordinate grammar and the search chain. The
 `openssf-scorecard.yaml` scan job is the one exception: Scorecard
 restricts the steps its job may run, so that job keeps a fixed list and
-the inputs apply to its summary job.
+the inputs apply to its summary job. The same restriction stops the scan
+job waiting for harden-runner's agent to finish starting, so it retries
+a failed analysis once; [the design brief](docs/BRIEF.md) gives the
+reasoning and the limits of that retry.
 
 An organisation that needs hosts beyond the shared list keeps its own
 supplemental list and names it. A caller in that organisation may
