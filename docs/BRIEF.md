@@ -167,9 +167,12 @@ dropping the entire workflow to audit.
 
 ### D7 — Pinning policy
 
-Action pins are left to Dependabot, which applies a seven-day cooldown.
-The `.github` allow-list coordinate is the exception: it must be current,
-with no cooldown, because it gates network access.
+Action pins are left to Dependabot, which applies a seven-day cooldown
+to every dependency outside `lfreleng-actions`; the organisation's own
+actions and reusable workflows are exempt, because their releases are
+reviewed here before tagging. The `.github` allow-list coordinate is
+the exception: it must be current, with no cooldown, because it gates
+network access.
 
 Always pin the **commit** SHA, never the annotated tag object. The
 `.github` repository has shipped three consecutive mis-tagged releases
