@@ -846,7 +846,7 @@ jobs:
         # yamllint disable-line rule:line-length
         if: inputs.build_type == 'maven' || inputs.build_type == 'gradle'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/build-metadata-action@a52e7ccbf5e1b71075112e7b6c0ec3937fc39f0d  # v0.12.0
+        uses: lfreleng-actions/build-metadata-action@689e13653176908922b12f85cb93b061c467ba6f  # v0.13.2
         with:
           path_prefix: ${{ inputs.path_prefix }}
 
