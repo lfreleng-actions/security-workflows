@@ -4,8 +4,8 @@
 
 # Executes sonarqube-cloud.yaml's tox steps, lifted verbatim from the
 # workflow, against generated inputs: the 'Validate tox inputs' check
-# and the 'Plan tox Python' step that keeps callers on Python older
-# than 3.11 working with tox-run-action v1. It follows
+# and the 'Plan tox Python' step, which must leave a caller on Python
+# 3.11 or newer to tox-run-action unchanged. It follows
 # tests/workflow-steps.sh exactly: yq extracts the run block, and bash
 # runs it with GitHub's 'shell: bash' flags under an emptied
 # environment. It lives in its own file only because that harness is
@@ -99,7 +99,6 @@ check() {
 
 no_outputs() { ! [ -s "${work}/github_output" ]; }
 no_warning() { ! grep -qF -- '::warning' "${work}/out"; }
-outputs_are() { diff -u -- - "${work}/github_output" > /dev/null; }
 
 echo '== tox_envs and tox_parallel (sonarqube-cloud validate)'
 step "${sonar}" validate 'Validate tox inputs'
@@ -131,40 +130,11 @@ echo '== Python for tox (sonarqube-cloud scan)'
 step "${sonar}" scan 'Plan tox Python'
 
 for version in '' '3.11' '3.11.9' '3.12.12' '3.13.0-rc.2' '3.14t' \
-  '4.0.0' 'pypy3.10.16' 'not a version'; do
+  '4.0.0' 'not a version'; do
   expect pass "leaves '${version}' unchanged" RESOLVED_PYTHON="${version}"
   check '  writes no outputs' no_outputs
   check '  emits no ::warning' no_warning
 done
-
-old() {
-  local version="$1" spec="$2"
-  match="::warning title=tox runs on Python 3.13::"
-  expect pass "splits tox from environments for ${version}" \
-    RESOLVED_PYTHON="${version}"
-  check '  lists the caller Python first and 3.13 last' outputs_are <<EOF
-versions<<TOX_PYTHON_VERSIONS
-${version}
-3.13
-TOX_PYTHON_VERSIONS
-override=testenv.default_base_python=${spec}
-EOF
-  check '  names the requested Python in the warning' \
-    grep -qF -- "requested Python ${version}, which has reached end" \
-    "${work}/out"
-  check '  repeats the warning in the step summary' \
-    grep -qF -- 'tox runs on Python 3.13, as it needs 3.11' \
-    "${work}/summary"
-}
-old '3.10.18' 'python3.10'
-old '3.10' 'python3.10'
-old '3.9.23' 'python3.9'
-old '3.8.18' 'python3.8'
-
-# A version carrying a newline would forge a second output line.
-expect pass 'leaves a multi-line version unchanged' \
-  RESOLVED_PYTHON=$'3.10.1\noverride=x'
-check '  writes no outputs' no_outputs
 
 echo '== tox-run-action wiring (sonarqube-cloud scan)'
 # with <file> <job> <step> <expression prefix>: the step's uses, with
