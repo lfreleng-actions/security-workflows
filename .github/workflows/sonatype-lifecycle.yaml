@@ -170,6 +170,20 @@ on:
         required: false
         type: boolean
         default: false
+      scan_summary:
+        description: >-
+          How much the scan action writes to the job summary: 'outcome'
+          (the default) reports the scan's outcome, 'full' reports the
+          most the action can and 'none' writes nothing. 'full' has a
+          cost beyond the summary: the action uploads the scan's result
+          file as a run artifact inside the scan step, and a failed
+          upload fails the scan. The job summary and the artifact are
+          as visible as the run itself. Has no effect with scan_mode
+          'sbom', which skips the action and writes its own short
+          section instead.
+        required: false
+        type: string
+        default: 'outcome'
 
       # --- Optional pre-scan build ---
       build_type:
@@ -484,6 +498,33 @@ on:
           build_type. Reported so a caller can confirm the toolchain
           the project asked for is the toolchain it got.
         value: ${{ jobs.scan.outputs.go_version }}
+      # The three below come from the Nexus IQ server by way of the
+      # scan action. They are data: a caller putting them in a Gerrit
+      # comment or a shell step must pass them through env: and never
+      # expand ${{ }} with them inside a run: block.
+      scan_id:
+        description: >-
+          The Nexus IQ scan ID the scan action reports. Data from the
+          Nexus IQ server: pass it through env:, never expand it in a
+          run: block. Empty with scan_mode 'sbom', where Nexus IQ
+          evaluates the upload after the job ends.
+        value: ${{ jobs.scan.outputs.scan_id }}
+      report_url:
+        description: >-
+          The URL of the Nexus IQ report for this scan, as the scan
+          action reports it, for a caller's vote or comment step to
+          link to. Data from the Nexus IQ server: pass it through env:,
+          never expand it in a run: block. Empty with scan_mode 'sbom',
+          where Nexus IQ evaluates the upload after the job ends.
+        value: ${{ jobs.scan.outputs.report_url }}
+      result_category:
+        description: >-
+          The category of the scan's result, the scan action's
+          cli_exit_category output. Data from the Nexus IQ server: pass
+          it through env:, never expand it in a run: block. Empty with
+          scan_mode 'sbom', where Nexus IQ evaluates the upload after
+          the job ends.
+        value: ${{ jobs.scan.outputs.result_category }}
 
 permissions: {}
 
@@ -668,6 +709,23 @@ jobs:
               ;;
           esac
 
+      - name: 'Validate scan_summary input'
+        shell: bash
+        env:
+          SCAN_SUMMARY: ${{ inputs.scan_summary }}
+        run: |
+          # Validated unconditionally, like scan_mode, even though the
+          # 'sbom' path never reaches the action that reads it: a typo
+          # should fail here rather than inside the scan step.
+          case "${SCAN_SUMMARY}" in
+            outcome | full | none) ;;
+            *)
+              echo "::error::scan_summary must be 'outcome', 'full' or" \
+                "'none' (received: '${SCAN_SUMMARY}')"
+              exit 1
+              ;;
+          esac
+
       - name: 'Validate timeout_minutes input'
         shell: bash
         env:
@@ -718,6 +776,9 @@ jobs:
     timeout-minutes: ${{ inputs.timeout_minutes }}
     outputs:
       go_version: ${{ steps.setup-go.outputs.go-version }}
+      scan_id: ${{ steps.scan.outputs.scan_id }}
+      report_url: ${{ steps.scan.outputs.report_url }}
+      result_category: ${{ steps.scan.outputs.cli_exit_category }}
     permissions:
       # The workflow checks out the repository under analysis.
       contents: read
@@ -1359,13 +1420,39 @@ jobs:
             -H 'Content-Type: application/xml' \
             --data '@bom.xml' "${upload_url}"
 
+      # The 'sbom' path skips the scan action, which writes the summary
+      # on the CLI path, and has no result of its own to report: Nexus
+      # IQ evaluates the upload after this job ends. Say so, rather than
+      # leave a summary that reads as though nothing happened.
+      - name: 'Summarise Go SBOM upload'
+        if: inputs.build_type == 'go' && inputs.scan_mode == 'sbom'
+        shell: bash
+        env:
+          PUBLIC_ID: ${{ steps.application.outputs.id }}
+        run: |
+          set -uo pipefail
+          # The id may be caller input; keep it inside its code span.
+          app_id="${PUBLIC_ID//\`/}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo '### Nexus IQ SBOM upload'
+              echo
+              echo "The CycloneDX SBOM was uploaded to Nexus IQ for" \
+                "application \`${app_id}\`. Nexus IQ evaluates it" \
+                "asynchronously, so this job reports no policy result;" \
+                "the result is on the Nexus IQ server."
+            } >> "${GITHUB_STEP_SUMMARY}" || true
+          fi
+          exit 0
+
       # no_checkout is 'true' because this workflow has already checked
       # out, via whichever of the two paths above applied.
       - name: 'Sonatype Lifecycle scan'
+        id: scan
         # scan_mode: 'sbom' uploads directly via REST above instead.
         if: inputs.build_type != 'go' || inputs.scan_mode != 'sbom'
         # yamllint disable-line rule:line-length
-        uses: lfreleng-actions/sonatype-lifecycle-scan-action@df7ed1b8e9a9fa59e5b11feb3aba566c27fda1cc  # v0.2.3
+        uses: lfreleng-actions/sonatype-lifecycle-scan-action@e457b6bf235973c91888b7ab645593f635209875  # v0.3.0
         with:
           nexus_iq_server: ${{ vars.NEXUS_IQ_SERVER }}
           nexus_iq_username: ${{ vars.NEXUS_IQ_USERNAME }}
@@ -1387,4 +1474,5 @@ jobs:
           ignore_system_errors: ${{ inputs.ignore_system_errors }}
           fail_on_policy_warnings: ${{ inputs.fail_on_policy_warnings }}
           debug: ${{ inputs.debug }}
+          summary: ${{ inputs.scan_summary }}
           no_checkout: 'true'
