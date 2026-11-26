@@ -80,6 +80,10 @@ jobs:
         shell: bash
         run: bash tests/scorecard-retry-steps.sh
 
+      - name: 'Run Sonatype scan result tests'
+        shell: bash
+        run: bash tests/scan-summary-steps.sh
+
   # Runs the SonarQube lane's tox steps for real against the fixture in
   # tests/fixtures/tox-python, short of the Sonar analysis, which needs
   # credentials. The legs cover the Python 3.11 floor through each way a

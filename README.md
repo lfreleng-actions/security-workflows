@@ -150,6 +150,42 @@ to the project lands where the analysis looks for it.
 
 [tra]: https://github.com/lfreleng-actions/tox-run-action
 
+## Nexus IQ scan results
+
+`sonatype-lifecycle.yaml` takes `scan_summary` to choose how much the
+scan writes to the job summary, and reports the scan's result as
+workflow outputs, so a caller's vote or comment step can link to it.
+
+<!-- markdownlint-disable MD013 -->
+
+| Input | Type | Default | Effect |
+| ----- | ---- | ------- | ------ |
+| `scan_summary` | string | `'outcome'` | `'outcome'` summarises the scan's outcome, `'full'` reports the most the scan action can, `'none'` writes nothing |
+
+| Output | Carries |
+| ------ | ------- |
+| `scan_id` | The Nexus IQ scan ID |
+| `report_url` | The URL of the Nexus IQ report for the scan |
+| `result_category` | The category of the scan's result (the scan action's `cli_exit_category`) |
+
+<!-- markdownlint-enable MD013 -->
+
+`'full'` costs more than space: the scan action uploads the scan's
+result file as a run artifact inside the scan step, and a failed upload
+fails the scan. The lane rejects any other value before the scan
+starts. The job summary, and that artifact, are as visible as the run:
+anyone who can read the run can read them.
+
+The three outputs carry values from the Nexus IQ server. Treat them as
+data: pass them to a step through `env:`, and never expand them with
+`${{ }}` inside a `run:` block.
+
+`scan_mode: 'sbom'` skips the scan action, so `scan_summary` has no
+effect there and all three outputs are empty: Nexus IQ evaluates the
+uploaded SBOM after the job ends. That path writes its own job-summary
+section instead, saying the SBOM went to the application and that the
+result is on the Nexus IQ server.
+
 ## Usage
 
 Each lane ships two callers under `examples/<lane>/`, added alongside
